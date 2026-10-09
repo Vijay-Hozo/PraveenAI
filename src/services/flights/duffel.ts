@@ -175,13 +175,18 @@ export async function resolveAirportCode(
 ): Promise<string | undefined> {
   airportDirectoryPromise ??= loadAirportDirectory();
   const airports = await airportDirectoryPromise;
+  const locationAliases: Record<string, string> = {
+    cochin: "kochi",
+    kochin: "kochi",
+  };
   const normalizedLocation = location.trim().toLowerCase();
+  const lookupLocation = locationAliases[normalizedLocation] ?? normalizedLocation;
 
   const exactMatch = airports.find((airport) =>
-    airport.iata_code?.toLowerCase() === normalizedLocation ||
-    airport.iata_city_code?.toLowerCase() === normalizedLocation ||
-    airport.city_name?.toLowerCase() === normalizedLocation ||
-    airport.name?.toLowerCase() === normalizedLocation,
+    airport.iata_code?.toLowerCase() === lookupLocation ||
+    airport.iata_city_code?.toLowerCase() === lookupLocation ||
+    airport.city_name?.toLowerCase() === lookupLocation ||
+    airport.name?.toLowerCase() === lookupLocation,
   );
 
   return exactMatch?.iata_code;

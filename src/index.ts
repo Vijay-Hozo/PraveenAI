@@ -206,7 +206,7 @@ async function tryResolveAirport(location: string): Promise<string | undefined> 
 async function parseNaturalFlightRoute(
   question: string,
 ): Promise<Pick<FlightSearch, "origin" | "destination"> | undefined> {
-  const routeEnd = "(?=\\s+(?:at|on|for|with|cheapest|cheaper|lowest|flight|flights|ticket|tickets)\\b|$)";
+  const routeEnd = "(?=\\s+(?:at|on|by|for|with|tomorrow|cheapest|cheaper|lowest|flight|flights|ticket|tickets)\\b|$)";
   const route = question.match(
     new RegExp(`\\bfrom\\s+(.+?)\\s+to\\s+(.+?)${routeEnd}`, "i"),
   ) ?? question.match(
@@ -228,6 +228,16 @@ async function parseNaturalFlightRoute(
 }
 
 function parseDate(value: string): string | undefined {
+  const relativeDate = value.match(/\b(day after tomorrow|tomorrow)\b/i);
+  if (relativeDate) {
+    const relativeDateLabel = relativeDate[1];
+    if (!relativeDateLabel) return undefined;
+
+    const date = new Date();
+    date.setDate(date.getDate() + (relativeDateLabel.toLowerCase() === "tomorrow" ? 1 : 2));
+    return dateAsIso(date);
+  }
+
   const isoDate = value.match(/\b(\d{4}-\d{2}-\d{2})\b/);
   if (isoDate) return isoDate[1];
 
@@ -261,24 +271,57 @@ function parseDate(value: string): string | undefined {
 
 bot.command("start", async (ctx) => {
   await ctx.reply(
-    "Hello! I'm your AI web search assistant.\n\n" +
-    "Send me a question and I'll search the web " +
-    "and generate an answer."
+    "Hello! I'm your travel agent.\n\n" +
+    "Ask me to find flights, hotels, or travel options. " +
+    "Use /bookflight for a guided flight search."
   );
 });
 
 bot.command("help", async (ctx) => {
   await ctx.reply(
-    "Ask me any question.\n" +
-    "I'll use Brave Search and Gemini to answer it.\n\n" +
-    "Book a flight step by step with /book-flight\n" +
+    "Ask me about flights, hotels, destinations, or travel plans.\n" +
+    "I'll find options and guide you toward the next action.\n\n" +
+    "Book a flight step by step with /bookflight\n" +
     "For flights, use:\n" +
     "/flights DEL BOM 2026-12-20"
   );
 });
 
-bot.command("book-flight", async (ctx) => {
+bot.hears(/^\/bookflight(?:@\w+)?(?:\s+.*)?$/i, async (ctx) => {
   bookFlightWizards.set(ctx.chat.id, {});
+
+  const commandText = ctx.message?.text ?? "";
+  const routeText = commandText.replace(/^\/bookflight(?:@\w+)?\s*/i, "").trim();
+  const route = routeText.match(
+    /^(.+?)\s+to\s+(.+?)(?=\s+(?:on|at|by|for|with)\b|\s+\d{1,2}(?:st|nd|rd|th)?\s+[a-z]+\b|$)/i,
+  );
+
+  if (route?.[1] && route[2]) {
+    const [origin, destination] = await Promise.all([
+      tryResolveAirport(route[1]),
+      tryResolveAirport(route[2]),
+    ]);
+
+    if (origin && destination && origin !== destination) {
+      await ctx.reply(`✅ Route found: ${origin} → ${destination}`);
+
+      const departureDate = parseDate(routeText);
+      const passengersMatch = routeText.match(/\b(\d+)\s+(?:adult|adults|traveler|travelers|passenger|passengers|member|members|people|persons)\b/i);
+      const passengers = passengersMatch?.[1] ? Number(passengersMatch[1]) : undefined;
+
+      if (!departureDate) {
+        pendingFlights.set(ctx.chat.id, { origin, destination, passengers });
+        await showDatePicker(ctx);
+      } else if (!passengers) {
+        pendingFlights.set(ctx.chat.id, { origin, destination, departureDate });
+        await showPassengerPicker(ctx);
+      } else {
+        await sendFlightOffers(ctx, { origin, destination, departureDate, passengers });
+      }
+      return;
+    }
+  }
+
   await ctx.reply(
     "✈️ Let's book a flight.\n\nWhat is your departure city or airport?\nExample: Dubai or DXB",
   );
@@ -465,7 +508,7 @@ bot.on("message:text", async (ctx) => {
 
   if (route && isFlightBooking) {
     const departureDate = parseDate(question);
-    const passengersMatch = question.match(/\b(\d+)\s+(?:adult|adults|traveler|travelers|passenger|passengers|member|members)\b/i);
+    const passengersMatch = question.match(/\b(\d+)\s+(?:adult|adults|traveler|travelers|passenger|passengers|member|members|people|persons)\b/i);
     const passengers = passengersMatch ? Number(passengersMatch[1]) : undefined;
 
     if (!departureDate) {
@@ -506,7 +549,7 @@ bot.on("message:text", async (ctx) => {
 
     const departureDate = parseDate(question);
     if (departureDate) {
-      const passengersMatch = question.match(/\b(\d+)\s+(?:adult|adults|traveler|travelers|passenger|passengers|member|members)\b/i);
+      const passengersMatch = question.match(/\b(\d+)\s+(?:adult|adults|traveler|travelers|passenger|passengers|member|members|people|persons)\b/i);
       const passengers = passengersMatch ? Number(passengersMatch[1]) : undefined;
 
       if (!passengers) {
