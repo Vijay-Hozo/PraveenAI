@@ -176,13 +176,13 @@ function passengerKeyboard(): InlineKeyboard {
 }
 
 async function showDatePicker(ctx: Context): Promise<void> {
-  await ctx.reply("📅 Choose your departure date:", {
+  await ctx.reply("📅 Choose your departure date, or type it as YYYY-MM-DD:", {
     reply_markup: datePickerKeyboard(),
   });
 }
 
 async function showPassengerPicker(ctx: Context): Promise<void> {
-  await ctx.reply("👥 How many passengers are traveling?", {
+  await ctx.reply("👥 Choose the passenger count, or type a number from 1 to 6:", {
     reply_markup: passengerKeyboard(),
   });
 }
@@ -409,6 +409,20 @@ bot.on("message:text", async (ctx) => {
 
   const pendingFlight = pendingFlights.get(chatId);
   if (pendingFlight) {
+    if (pendingFlight.departureDate && !pendingFlight.passengers) {
+      const manualPassengers = question.match(/^\s*([1-6])(?:\s+(?:passenger|passengers|adult|adults|member|members))?\s*$/i);
+
+      if (manualPassengers?.[1]) {
+        pendingFlight.passengers = Number(manualPassengers[1]);
+        pendingFlights.delete(chatId);
+        await sendFlightOffers(ctx, pendingFlight as FlightSearch);
+        return;
+      }
+
+      await showPassengerPicker(ctx);
+      return;
+    }
+
     const departureDate = parseDate(question);
     if (departureDate) {
       const passengersMatch = question.match(/\b(\d+)\s+(?:adult|adults|traveler|travelers|passenger|passengers|member|members)\b/i);
