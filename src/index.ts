@@ -25,10 +25,17 @@ type PendingFlight = Pick<FlightSearch, "origin" | "destination"> & {
   passengers?: number;
 };
 
+type BookFlightWizard = {
+  origin?: string;
+  destination?: string;
+  departureDate?: string;
+};
+
 const pendingFlights = new Map<
   number,
   PendingFlight
 >();
+const bookFlightWizards = new Map<number, BookFlightWizard>();
 
 function escapeHtml(value: string): string {
   return value
@@ -187,6 +194,15 @@ async function showPassengerPicker(ctx: Context): Promise<void> {
   });
 }
 
+async function tryResolveAirport(location: string): Promise<string | undefined> {
+  try {
+    return await resolveAirportCode(location);
+  } catch (error) {
+    console.error("Airport lookup error:", error);
+    return undefined;
+  }
+}
+
 async function parseNaturalFlightRoute(
   question: string,
 ): Promise<Pick<FlightSearch, "origin" | "destination"> | undefined> {
@@ -204,8 +220,8 @@ async function parseNaturalFlightRoute(
   if (!originName || !destinationName) return undefined;
 
   const [origin, destination] = await Promise.all([
-    resolveAirportCode(originName),
-    resolveAirportCode(destinationName),
+    tryResolveAirport(originName),
+    tryResolveAirport(destinationName),
   ]);
 
   return origin && destination ? { origin, destination } : undefined;
@@ -255,8 +271,16 @@ bot.command("help", async (ctx) => {
   await ctx.reply(
     "Ask me any question.\n" +
     "I'll use Brave Search and Gemini to answer it.\n\n" +
+    "Book a flight step by step with /book-flight\n" +
     "For flights, use:\n" +
     "/flights DEL BOM 2026-12-20"
+  );
+});
+
+bot.command("book-flight", async (ctx) => {
+  bookFlightWizards.set(ctx.chat.id, {});
+  await ctx.reply(
+    "✈️ Let's book a flight.\n\nWhat is your departure city or airport?\nExample: Dubai or DXB",
   );
 });
 
@@ -313,6 +337,7 @@ bot.callbackQuery(/^flight-date:(\d{4}-\d{2}-\d{2})$/, async (ctx) => {
   }
 
   pendingFlights.delete(chatId);
+  bookFlightWizards.delete(chatId);
   await sendFlightOffers(ctx, pendingFlight as FlightSearch);
 });
 
@@ -334,6 +359,7 @@ bot.callbackQuery(/^flight-passengers:(\d+)$/, async (ctx) => {
   }
 
   pendingFlights.delete(chatId);
+  bookFlightWizards.delete(chatId);
   await sendFlightOffers(ctx, pendingFlight as FlightSearch);
 });
 
@@ -364,6 +390,60 @@ bot.on("message:text", async (ctx) => {
   if (question.startsWith("/")) return;
 
   const chatId = ctx.chat.id;
+  const wizard = bookFlightWizards.get(chatId);
+
+  if (wizard) {
+    if (!wizard.origin) {
+      const origin = await tryResolveAirport(question);
+      if (!origin) {
+        await ctx.reply("I couldn't find that departure airport. Please try a city name or 3-letter airport code.");
+        return;
+      }
+
+      wizard.origin = origin;
+      await ctx.reply("What is your arrival city or airport?\nExample: Chennai or MAA");
+      return;
+    }
+
+    if (!wizard.destination) {
+      const destination = await tryResolveAirport(question);
+      if (!destination) {
+        await ctx.reply("I couldn't find that arrival airport. Please try a city name or 3-letter airport code.");
+        return;
+      }
+
+      if (destination === wizard.origin) {
+        await ctx.reply("Departure and arrival airports must be different. Please enter another arrival airport.");
+        return;
+      }
+
+      wizard.destination = destination;
+      pendingFlights.set(chatId, {
+        origin: wizard.origin,
+        destination,
+      });
+      await showDatePicker(ctx);
+      return;
+    }
+
+    const departureDate = parseDate(question);
+    if (!wizard.departureDate) {
+      if (!departureDate) {
+        await showDatePicker(ctx);
+        return;
+      }
+
+      wizard.departureDate = departureDate;
+      pendingFlights.set(chatId, {
+        origin: wizard.origin,
+        destination: wizard.destination,
+        departureDate,
+      });
+      await showPassengerPicker(ctx);
+      return;
+    }
+  }
+
   const isFlightBooking = /\b(book|booking|ticket|tickets|flight|flights|fly|travel)\b/i.test(question);
   let route: Pick<FlightSearch, "origin" | "destination"> | undefined;
 
@@ -415,6 +495,7 @@ bot.on("message:text", async (ctx) => {
       if (manualPassengers?.[1]) {
         pendingFlight.passengers = Number(manualPassengers[1]);
         pendingFlights.delete(chatId);
+        bookFlightWizards.delete(chatId);
         await sendFlightOffers(ctx, pendingFlight as FlightSearch);
         return;
       }
@@ -435,6 +516,7 @@ bot.on("message:text", async (ctx) => {
       }
 
       pendingFlights.delete(chatId);
+      bookFlightWizards.delete(chatId);
       await sendFlightOffers(ctx, { ...pendingFlight, departureDate, passengers });
       return;
     }
