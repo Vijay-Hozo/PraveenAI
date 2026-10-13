@@ -5,6 +5,7 @@ import { InlineKeyboard } from "grammy";
 import type { Context } from "grammy";
 import { searchWeb } from "./services/brave";
 import { generateAnswer } from "./services/gemini";
+import { browsePublicPage } from "./services/browserbase";
 import {
   searchFlights,
   resolveAirportCode,
@@ -282,9 +283,47 @@ bot.command("help", async (ctx) => {
     "Ask me about flights, hotels, destinations, or travel plans.\n" +
     "I'll find options and guide you toward the next action.\n\n" +
     "Book a flight step by step with /bookflight\n" +
+    "Browse a public page with /browse https://example.com\n" +
     "For flights, use:\n" +
     "/flights DEL BOM 2026-12-20"
   );
+});
+
+bot.command("browse", async (ctx) => {
+  const value = (ctx.message?.text ?? "")
+    .replace(/^\/browse(?:@\w+)?\s*/i, "")
+    .trim();
+
+  if (!value) {
+    await ctx.reply("Use this format:\n/browse https://example.com");
+    return;
+  }
+
+  await ctx.reply("🌐 Opening that public page...");
+
+  try {
+    const result = await browsePublicPage(value);
+    const heading = result.title ? `<b>${escapeHtml(result.title)}</b>\n` : "";
+    const pageText = result.text || "The page did not contain readable text.";
+    const response = `${heading}<a href="${escapeHtml(result.url)}">${escapeHtml(result.url)}</a>\n\n${escapeHtml(pageText)}`;
+    const chunks = response.match(/[\s\S]{1,4000}/g) ?? ["The page did not contain readable text."];
+
+    for (const chunk of chunks) {
+      await ctx.reply(chunk, {
+        parse_mode: "HTML",
+        link_preview_options: { is_disabled: true },
+      });
+    }
+  } catch (error) {
+    console.error("Browserbase browse error:", error);
+    const details = error instanceof Error
+      ? error.message.replace(/^Error:\s*/, "").slice(0, 300)
+      : "Unknown Browserbase error";
+    await ctx.reply(
+      `I couldn't browse that page.\n\n<code>${escapeHtml(details)}</code>`,
+      { parse_mode: "HTML" },
+    );
+  }
 });
 
 bot.hears(/^\/bookflight(?:@\w+)?(?:\s+.*)?$/i, async (ctx) => {
