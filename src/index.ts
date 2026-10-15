@@ -4,7 +4,7 @@ import { Bot } from "grammy";
 import { InlineKeyboard } from "grammy";
 import type { Context } from "grammy";
 import { searchWeb } from "./services/brave";
-import { generateAnswer } from "./services/gemini";
+import { generateAnswer, summarizeBrowserPage } from "./services/gemini";
 import { browsePublicPage } from "./services/browserbase";
 import {
   searchFlights,
@@ -12,6 +12,16 @@ import {
   type FlightOffer,
   type FlightSearch,
 } from "./services/flights/duffel";
+import {
+  searchHotels,
+  prebookHotel,
+  bookHotel,
+  isLiteApiSandbox,
+  type HotelGuest,
+  type HotelOffer,
+  type HotelPrebook,
+  type HotelSearch,
+} from "./services/hotels/liteapi";
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 
@@ -37,6 +47,16 @@ const pendingFlights = new Map<
   PendingFlight
 >();
 const bookFlightWizards = new Map<number, BookFlightWizard>();
+
+type BookHotelWizard = Partial<HotelSearch> & {
+  offer?: HotelOffer;
+  prebook?: HotelPrebook;
+  guest?: HotelGuest;
+};
+
+// LiteAPI offer IDs are too long for Telegram callback data, so buttons use short keys.
+const hotelOffers = new Map<string, HotelOffer>();
+const bookHotelWizards = new Map<number, BookHotelWizard>();
 
 function escapeHtml(value: string): string {
   return value
@@ -157,14 +177,14 @@ function dateLabel(date: Date): string {
   });
 }
 
-function datePickerKeyboard(): InlineKeyboard {
+function datePickerKeyboard(callbackPrefix = "flight-date"): InlineKeyboard {
   const keyboard = new InlineKeyboard();
   const today = new Date();
 
   for (let offset = 1; offset <= 30; offset += 1) {
     const date = new Date(today);
     date.setDate(today.getDate() + offset);
-    keyboard.text(dateLabel(date), `flight-date:${dateAsIso(date)}`);
+    keyboard.text(dateLabel(date), `${callbackPrefix}:${dateAsIso(date)}`);
 
     if (offset % 2 === 0) keyboard.row();
   }
@@ -270,11 +290,164 @@ function parseDate(value: string): string | undefined {
   return `${year}-${String(month).padStart(2, "0")}-${day.padStart(2, "0")}`;
 }
 
+function addNights(isoDate: string, nights: number): string {
+  const date = new Date(`${isoDate}T00:00:00`);
+  date.setDate(date.getDate() + nights);
+  return dateAsIso(date);
+}
+
+function nightsBetween(checkin: string, checkout: string): number {
+  return Math.round(
+    (Date.parse(`${checkout}T00:00:00Z`) - Date.parse(`${checkin}T00:00:00Z`)) / 86400000,
+  );
+}
+
+function nightsKeyboard(): InlineKeyboard {
+  const keyboard = new InlineKeyboard();
+
+  for (let nights = 1; nights <= 10; nights += 1) {
+    keyboard.text(`${nights} ${nights === 1 ? "night" : "nights"}`, `hotel-nights:${nights}`);
+    if (nights % 2 === 0) keyboard.row();
+  }
+
+  return keyboard;
+}
+
+function hotelGuestsKeyboard(): InlineKeyboard {
+  const keyboard = new InlineKeyboard();
+
+  for (let adults = 1; adults <= 4; adults += 1) {
+    keyboard.text(`${adults} ${adults === 1 ? "adult" : "adults"}`, `hotel-guests:${adults}`);
+    if (adults % 2 === 0) keyboard.row();
+  }
+
+  return keyboard;
+}
+
+function parseHotelDestination(question: string): string | undefined {
+  const destination = question.match(
+    /\b(?:in|at|near)\s+(.+?)(?=\s+(?:from|on|for|with|between|checking|check-in|checkin|tomorrow|day after|\d)\b|[,.?!]|$)/i,
+  );
+
+  return destination?.[1]?.trim() || undefined;
+}
+
+function parseHotelGuest(value: string): HotelGuest | undefined {
+  const email = value.match(/[^\s@]+@[^\s@]+\.[^\s@]+/)?.[0];
+  if (!email) return undefined;
+
+  const nameParts = value.replace(email, "").replace(/[,;]/g, " ").trim().split(/\s+/);
+  const firstName = nameParts[0];
+  const lastName = nameParts.slice(1).join(" ");
+
+  return firstName && lastName ? { firstName, lastName, email } : undefined;
+}
+
+function hotelErrorDetails(error: unknown): string {
+  return error instanceof Error
+    ? error.message.replace(/^Error:\s*/, "").slice(0, 300)
+    : "Unknown LiteAPI error";
+}
+
+async function sendHotelOffers(
+  ctx: Context,
+  search: HotelSearch,
+): Promise<void> {
+  await ctx.reply(`🏨 Searching hotels in ${search.destination}...`);
+
+  try {
+    const offers = await searchHotels(search);
+
+    if (!offers.length) {
+      await ctx.reply("No hotels were found for that destination and dates. Try another city or dates.");
+      return;
+    }
+
+    const nights = nightsBetween(search.checkin, search.checkout);
+    const keyboard = new InlineKeyboard();
+    const message = offers.map((offer, index) => {
+      const key = crypto.randomUUID().slice(0, 12);
+      hotelOffers.set(key, offer);
+      keyboard.text(`Select ${index + 1}`, `hotel:${key}`).row();
+
+      const stars = offer.stars ? ` ${"⭐".repeat(Math.round(offer.stars))}` : "";
+      const rating = offer.rating
+        ? `Rated ${offer.rating}/10${offer.reviewCount ? ` (${offer.reviewCount} reviews)` : ""}`
+        : undefined;
+
+      return [
+        `<b>${index + 1}. ${escapeHtml(offer.hotelName)}</b>${stars}`,
+        offer.address ? escapeHtml(offer.address) : undefined,
+        rating,
+        `${escapeHtml(offer.roomName)}${offer.boardName ? ` · ${escapeHtml(offer.boardName)}` : ""}`,
+        offer.refundable ? "Refundable" : "Non-refundable",
+        `<b>${escapeHtml(offer.totalCurrency)} ${offer.totalAmount.toFixed(2)}</b> for ${nights} ${nights === 1 ? "night" : "nights"}`,
+      ].filter(Boolean).join("\n");
+    }).join("\n\n");
+
+    await ctx.reply(
+      `<b>Hotels in ${escapeHtml(search.destination)}</b>\n` +
+      `${escapeHtml(search.checkin)} → ${escapeHtml(search.checkout)} · ${search.adults} ${search.adults === 1 ? "adult" : "adults"}\n\n` +
+      message,
+      {
+        parse_mode: "HTML",
+        reply_markup: keyboard,
+      },
+    );
+  } catch (error) {
+    console.error("Hotel search error:", error);
+    await ctx.reply(
+      `LiteAPI could not search those hotels. Please check the destination and dates.\n\n<code>${escapeHtml(hotelErrorDetails(error))}</code>`,
+      { parse_mode: "HTML" },
+    );
+  }
+}
+
+async function continueHotelWizard(
+  ctx: Context,
+  wizard: BookHotelWizard,
+): Promise<void> {
+  if (!wizard.destination) {
+    await ctx.reply("🏨 Which city or area do you want to stay in?\nExample: Dubai Marina");
+    return;
+  }
+
+  if (!wizard.checkin) {
+    await ctx.reply("📅 Choose your check-in date, or type it as YYYY-MM-DD:", {
+      reply_markup: datePickerKeyboard("hotel-checkin"),
+    });
+    return;
+  }
+
+  if (!wizard.checkout) {
+    await ctx.reply("🌙 How many nights? Choose below, or type the check-out date as YYYY-MM-DD:", {
+      reply_markup: nightsKeyboard(),
+    });
+    return;
+  }
+
+  if (!wizard.adults) {
+    await ctx.reply("👥 How many adults? Choose below, or type a number from 1 to 4:", {
+      reply_markup: hotelGuestsKeyboard(),
+    });
+    return;
+  }
+
+  await sendHotelOffers(ctx, wizard as HotelSearch);
+}
+
+function startHotelWizard(chatId: number, wizard: BookHotelWizard = {}): BookHotelWizard {
+  bookFlightWizards.delete(chatId);
+  pendingFlights.delete(chatId);
+  bookHotelWizards.set(chatId, wizard);
+  return wizard;
+}
+
 bot.command("start", async (ctx) => {
   await ctx.reply(
     "Hello! I'm your travel agent.\n\n" +
     "Ask me to find flights, hotels, or travel options. " +
-    "Use /bookflight for a guided flight search."
+    "Use /bookflight for a guided flight search or /bookhotel to book a hotel."
   );
 });
 
@@ -283,10 +456,197 @@ bot.command("help", async (ctx) => {
     "Ask me about flights, hotels, destinations, or travel plans.\n" +
     "I'll find options and guide you toward the next action.\n\n" +
     "Book a flight step by step with /bookflight\n" +
+    "Book a hotel step by step with /bookhotel\n" +
     "Browse a public page with /browse https://example.com\n" +
     "For flights, use:\n" +
-    "/flights DEL BOM 2026-12-20"
+    "/flights DEL BOM 2026-12-20\n" +
+    "For hotels, use:\n" +
+    "/hotels Dubai 2026-12-20 2026-12-22 2"
   );
+});
+
+bot.command("bookhotel", async (ctx) => {
+  const text = (ctx.message?.text ?? "")
+    .replace(/^\/bookhotel(?:@\w+)?\s*/i, "")
+    .trim();
+  const wizard = startHotelWizard(ctx.chat.id);
+
+  if (text) {
+    wizard.destination = parseHotelDestination(` in ${text}`) ?? text;
+    wizard.checkin = parseDate(text);
+    const adults = text.match(/\b(\d+)\s+(?:adult|adults|guest|guests|people|persons)\b/i)?.[1];
+    if (adults) wizard.adults = Number(adults);
+  }
+
+  await continueHotelWizard(ctx, wizard);
+});
+
+bot.command("hotels", async (ctx) => {
+  const input = (ctx.message?.text ?? "")
+    .replace(/^\/hotels(?:@\w+)?\s*/i, "")
+    .trim();
+  const match = input.match(/^(.+?)\s+(\d{4}-\d{2}-\d{2})\s+(\d{4}-\d{2}-\d{2})(?:\s+(\d+))?$/);
+
+  if (!match?.[1] || !match[2] || !match[3]) {
+    await ctx.reply(
+      "Use this format:\n/hotels DESTINATION CHECKIN CHECKOUT [ADULTS]\n\n" +
+      "Example:\n/hotels Dubai 2026-12-20 2026-12-22 2",
+    );
+    return;
+  }
+
+  const search: HotelSearch = {
+    destination: match[1],
+    checkin: match[2],
+    checkout: match[3],
+    adults: Number(match[4] ?? 1),
+  };
+
+  if (nightsBetween(search.checkin, search.checkout) < 1) {
+    await ctx.reply("Check-out must be after check-in.");
+    return;
+  }
+
+  startHotelWizard(ctx.chat.id, search);
+  await sendHotelOffers(ctx, search);
+});
+
+bot.callbackQuery(/^hotel-checkin:(\d{4}-\d{2}-\d{2})$/, async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const chatId = ctx.chat?.id;
+  const wizard = chatId ? bookHotelWizards.get(chatId) : undefined;
+
+  if (!chatId || !wizard) {
+    await ctx.reply("This hotel search has expired. Please run /bookhotel again.");
+    return;
+  }
+
+  wizard.checkin = ctx.match[1];
+  wizard.checkout = undefined;
+  await continueHotelWizard(ctx, wizard);
+});
+
+bot.callbackQuery(/^hotel-nights:(\d+)$/, async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const chatId = ctx.chat?.id;
+  const wizard = chatId ? bookHotelWizards.get(chatId) : undefined;
+
+  if (!chatId || !wizard?.checkin) {
+    await ctx.reply("This hotel search has expired. Please run /bookhotel again.");
+    return;
+  }
+
+  wizard.checkout = addNights(wizard.checkin, Number(ctx.match[1]));
+  await continueHotelWizard(ctx, wizard);
+});
+
+bot.callbackQuery(/^hotel-guests:(\d+)$/, async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const chatId = ctx.chat?.id;
+  const wizard = chatId ? bookHotelWizards.get(chatId) : undefined;
+
+  if (!chatId || !wizard) {
+    await ctx.reply("This hotel search has expired. Please run /bookhotel again.");
+    return;
+  }
+
+  wizard.adults = Number(ctx.match[1]);
+  await continueHotelWizard(ctx, wizard);
+});
+
+bot.callbackQuery(/^hotel:(.+)$/, async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const chatId = ctx.chat?.id;
+  const offerKey = ctx.match[1];
+  const offer = offerKey ? hotelOffers.get(offerKey) : undefined;
+
+  if (!chatId || !offer) {
+    await ctx.reply("That hotel option has expired. Please search again with /bookhotel.");
+    return;
+  }
+
+  await ctx.reply("⏳ Checking that the room is still available...");
+
+  try {
+    const prebook = await prebookHotel(offer.offerId);
+    const wizard = bookHotelWizards.get(chatId) ?? startHotelWizard(chatId, {
+      destination: offer.hotelName,
+      checkin: offer.checkin,
+      checkout: offer.checkout,
+      adults: offer.adults,
+    });
+    wizard.offer = offer;
+    wizard.prebook = prebook;
+    wizard.guest = undefined;
+
+    const changes = [
+      prebook.priceChanged ? "⚠️ The price changed since your search." : undefined,
+      prebook.cancellationChanged ? "⚠️ The cancellation terms changed since your search." : undefined,
+    ].filter(Boolean).join("\n");
+
+    await ctx.reply(
+      `<b>Room held: ${escapeHtml(offer.hotelName)}</b>\n` +
+      `${escapeHtml(offer.roomName)}\n` +
+      `${escapeHtml(offer.checkin)} → ${escapeHtml(offer.checkout)} · ${offer.adults} ${offer.adults === 1 ? "adult" : "adults"}\n` +
+      `${offer.refundable ? "Refundable" : "Non-refundable"}\n` +
+      `<b>${escapeHtml(prebook.currency)} ${prebook.price.toFixed(2)}</b>\n` +
+      (changes ? `\n${changes}\n` : "") +
+      "\nPlease send the lead guest's full name and email.\nExample: John Smith john@example.com",
+      {
+        parse_mode: "HTML",
+        reply_markup: new InlineKeyboard().text("Cancel", "hotel-cancel"),
+      },
+    );
+  } catch (error) {
+    console.error("Hotel prebook error:", error);
+    await ctx.reply(
+      `That room is no longer available. Please choose another option.\n\n<code>${escapeHtml(hotelErrorDetails(error))}</code>`,
+      { parse_mode: "HTML" },
+    );
+  }
+});
+
+bot.callbackQuery("hotel-confirm", async (ctx) => {
+  await ctx.answerCallbackQuery();
+  const chatId = ctx.chat?.id;
+  const wizard = chatId ? bookHotelWizards.get(chatId) : undefined;
+
+  if (!chatId || !wizard?.prebook || !wizard.guest || !wizard.offer) {
+    await ctx.reply("This hotel booking has expired. Please search again with /bookhotel.");
+    return;
+  }
+
+  await ctx.reply("⏳ Confirming your hotel booking...");
+
+  try {
+    const booking = await bookHotel(wizard.prebook.prebookId, wizard.guest);
+    bookHotelWizards.delete(chatId);
+
+    await ctx.reply(
+      `<b>✅ Hotel booking ${escapeHtml(booking.status.toLowerCase())}</b>\n` +
+      `${escapeHtml(booking.hotelName ?? wizard.offer.hotelName)}\n` +
+      `${escapeHtml(booking.checkin ?? wizard.offer.checkin)} → ${escapeHtml(booking.checkout ?? wizard.offer.checkout)}\n` +
+      `Guest: ${escapeHtml(`${wizard.guest.firstName} ${wizard.guest.lastName}`)}\n` +
+      `Booking ID: <code>${escapeHtml(booking.bookingId)}</code>\n` +
+      (booking.hotelConfirmationCode
+        ? `Hotel confirmation: <code>${escapeHtml(booking.hotelConfirmationCode)}</code>\n`
+        : "") +
+      (isLiteApiSandbox() ? "\nThis is a LiteAPI sandbox booking. No real reservation or payment was made." : ""),
+      { parse_mode: "HTML" },
+    );
+  } catch (error) {
+    console.error("Hotel booking error:", error);
+    await ctx.reply(
+      `I couldn't complete that hotel booking.\n\n<code>${escapeHtml(hotelErrorDetails(error))}</code>`,
+      { parse_mode: "HTML" },
+    );
+  }
+});
+
+bot.callbackQuery("hotel-cancel", async (ctx) => {
+  await ctx.answerCallbackQuery();
+  if (ctx.chat) bookHotelWizards.delete(ctx.chat.id);
+  await ctx.reply("Hotel booking cancelled. Send /bookhotel whenever you want to search again.");
 });
 
 bot.command("browse", async (ctx) => {
@@ -303,9 +663,12 @@ bot.command("browse", async (ctx) => {
 
   try {
     const result = await browsePublicPage(value);
-    const heading = result.title ? `<b>${escapeHtml(result.title)}</b>\n` : "";
     const pageText = result.text || "The page did not contain readable text.";
-    const response = `${heading}<a href="${escapeHtml(result.url)}">${escapeHtml(result.url)}</a>\n\n${escapeHtml(pageText)}`;
+    const summary = formatForTelegram(
+      await summarizeBrowserPage(result.title, result.url, pageText),
+    );
+    const heading = result.title ? `<b>${escapeHtml(result.title)}</b>\n` : "";
+    const response = `${heading}<a href="${escapeHtml(result.url)}">${escapeHtml(result.url)}</a>\n\n${summary}`;
     const chunks = response.match(/[\s\S]{1,4000}/g) ?? ["The page did not contain readable text."];
 
     for (const chunk of chunks) {
@@ -327,6 +690,7 @@ bot.command("browse", async (ctx) => {
 });
 
 bot.hears(/^\/bookflight(?:@\w+)?(?:\s+.*)?$/i, async (ctx) => {
+  bookHotelWizards.delete(ctx.chat.id);
   bookFlightWizards.set(ctx.chat.id, {});
 
   const commandText = ctx.message?.text ?? "";
@@ -472,6 +836,85 @@ bot.on("message:text", async (ctx) => {
   if (question.startsWith("/")) return;
 
   const chatId = ctx.chat.id;
+  const hotelWizard = bookHotelWizards.get(chatId);
+
+  if (hotelWizard?.prebook) {
+    const guest = parseHotelGuest(question);
+    if (!guest) {
+      await ctx.reply(
+        "Please send the lead guest's first name, last name, and email.\nExample: John Smith john@example.com",
+        { reply_markup: new InlineKeyboard().text("Cancel", "hotel-cancel") },
+      );
+      return;
+    }
+
+    hotelWizard.guest = guest;
+    await ctx.reply(
+      `<b>Confirm hotel booking</b>\n` +
+      `${escapeHtml(hotelWizard.offer?.hotelName ?? "Hotel")}\n` +
+      `Guest: ${escapeHtml(`${guest.firstName} ${guest.lastName}`)} (${escapeHtml(guest.email)})\n` +
+      `<b>${escapeHtml(hotelWizard.prebook.currency)} ${hotelWizard.prebook.price.toFixed(2)}</b>`,
+      {
+        parse_mode: "HTML",
+        reply_markup: new InlineKeyboard()
+          .text("✅ Confirm booking", "hotel-confirm")
+          .text("Cancel", "hotel-cancel"),
+      },
+    );
+    return;
+  }
+
+  if (hotelWizard && !hotelWizard.destination) {
+    hotelWizard.destination = question;
+    await continueHotelWizard(ctx, hotelWizard);
+    return;
+  }
+
+  if (hotelWizard && !hotelWizard.checkin) {
+    hotelWizard.checkin = parseDate(question);
+    await continueHotelWizard(ctx, hotelWizard);
+    return;
+  }
+
+  if (hotelWizard?.checkin && !hotelWizard.checkout) {
+    const checkout = parseDate(question);
+    const nights = question.match(/^\s*(\d{1,2})(?:\s+nights?)?\s*$/i)?.[1];
+
+    if (checkout && nightsBetween(hotelWizard.checkin, checkout) >= 1) {
+      hotelWizard.checkout = checkout;
+    } else if (nights && Number(nights) >= 1) {
+      hotelWizard.checkout = addNights(hotelWizard.checkin, Number(nights));
+    } else {
+      await ctx.reply("Check-out must be after check-in.");
+    }
+
+    await continueHotelWizard(ctx, hotelWizard);
+    return;
+  }
+
+  if (hotelWizard?.checkout && !hotelWizard.adults) {
+    const adults = question.match(/^\s*([1-4])(?:\s+(?:adult|adults|guest|guests))?\s*$/i)?.[1];
+    if (adults) hotelWizard.adults = Number(adults);
+    await continueHotelWizard(ctx, hotelWizard);
+    return;
+  }
+
+  const isHotelBooking =
+    /\b(hotel|hotels|resort|stay|accommodation|room|rooms)\b/i.test(question) &&
+    /\b(book|booking|reserve|find|search|need|want|available|cheap|cheapest)\b/i.test(question);
+
+  if (isHotelBooking) {
+    const adults = question.match(/\b(\d+)\s+(?:adult|adults|guest|guests|people|persons)\b/i)?.[1];
+    const wizard = startHotelWizard(chatId, {
+      destination: parseHotelDestination(question),
+      checkin: parseDate(question),
+      adults: adults ? Number(adults) : undefined,
+    });
+
+    await continueHotelWizard(ctx, wizard);
+    return;
+  }
+
   const wizard = bookFlightWizards.get(chatId);
 
   if (wizard) {
