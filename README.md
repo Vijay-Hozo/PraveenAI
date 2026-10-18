@@ -64,6 +64,49 @@ Bookings are only enabled with a sandbox key (`sand_...`), which simulates
 payment with no charge. A production key can search and prebook, but booking
 stays disabled until a real payment flow (LiteAPI payment SDK) is added.
 
+## Telegram Mini App
+
+The bot ships a [Telegram Mini App](https://core.telegram.org/bots/webapps)
+for searching flights and booking hotels. The bot process also starts an HTTP
+server (`WEBAPP_PORT`, default `3000`) that serves `public/miniapp` and a small
+JSON API under `/api`.
+
+Telegram only opens Mini Apps over HTTPS, so expose the port with a tunnel and
+set `WEBAPP_URL` to the public URL:
+
+```bash
+cloudflared tunnel --url http://localhost:3000
+# then in .env:
+WEBAPP_URL=https://<your-tunnel>.trycloudflare.com
+```
+
+With `WEBAPP_URL` set, the bot:
+
+- sets the chat **menu button** to open the app (`setChatMenuButton`)
+- adds **Search flights** and **Book hotels** inline `web_app` buttons to
+  `/start` and `/app`
+- offers a **Quick search** keyboard button in `/app`. Keyboard launches carry
+  no user data, so the app sends the search back with `sendData` and the bot
+  replies in the chat (`web_app_data`)
+- answers inline queries with an **Open travel app** button (enable inline mode
+  in @BotFather first)
+
+Inside the app, choosing a flight posts it to the chat through
+`answerWebAppQuery`. Hotels are prebooked and booked in the app, and the
+confirmation is also sent to the chat. Offers can be forwarded to any chat with
+`savePreparedInlineMessage` and `shareMessage`. The app uses Telegram's
+MainButton, SecondaryButton, BackButton, SettingsButton (full screen, add to
+home screen, clear data), haptic feedback, native popups, theme colors and
+safe areas. Recent searches and guest details are stored in CloudStorage.
+
+Every API request sends `Telegram.WebApp.initData`, and the server verifies its
+HMAC-SHA256 signature with the bot token. Data older than 24 hours is
+rejected.
+
+To use direct links such as `t.me/<bot>/<app>?startapp=hotels`, register the
+app with `/newapp` in @BotFather using the same URL. `startapp=hotels` opens
+the Hotels tab.
+
 ## Browserbase page browsing
 
 The bot can open a public HTTPS page in a short-lived Browserbase browser

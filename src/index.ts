@@ -22,12 +22,18 @@ import {
   type HotelPrebook,
   type HotelSearch,
 } from "./services/hotels/liteapi";
+import { escapeHtml, formatFlightDateTime, nightsBetween } from "./utils/format";
+import { startMiniAppServer } from "./webapp/server";
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 
 if (!token) {
   throw new Error("TELEGRAM_BOT_TOKEN is missing");
 }
+
+// Public HTTPS URL that serves public/miniapp (Telegram rejects plain HTTP).
+const webAppUrl = process.env.WEBAPP_URL?.replace(/\/+$/, "");
+const webAppPort = Number(process.env.WEBAPP_PORT || 3000);
 
 const bot = new Bot(token);
 const flightOffers = new Map<string, FlightOffer>();
@@ -57,13 +63,6 @@ type BookHotelWizard = Partial<HotelSearch> & {
 // LiteAPI offer IDs are too long for Telegram callback data, so buttons use short keys.
 const hotelOffers = new Map<string, HotelOffer>();
 const bookHotelWizards = new Map<number, BookHotelWizard>();
-
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-}
 
 function formatForTelegram(answer: string): string {
   const protectedTags: string[] = [];
@@ -97,25 +96,6 @@ function formatForTelegram(answer: string): string {
     /@@TELEGRAM_HTML_(\d+)@@/g,
     (_, index: string) => protectedTags[Number(index)] ?? "",
   );
-}
-
-function formatFlightDateTime(value: string): string {
-  const match = value.match(
-    /^(?:(\w{3})\s+)?(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/,
-  );
-  if (!match) return value;
-
-  const [, airportCode, year, monthNumber, day, hourNumber, minute] = match;
-  const monthNames = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-  ];
-  const month = monthNames[Number(monthNumber) - 1] ?? monthNumber;
-  const hour = Number(hourNumber);
-  const meridiem = hour >= 12 ? "PM" : "AM";
-  const displayHour = hour % 12 || 12;
-
-  return `${airportCode ? `${airportCode} ` : ""}${day} ${month} ${year} at ${displayHour}:${minute} ${meridiem}`;
 }
 
 async function sendFlightOffers(
@@ -296,12 +276,6 @@ function addNights(isoDate: string, nights: number): string {
   return dateAsIso(date);
 }
 
-function nightsBetween(checkin: string, checkout: string): number {
-  return Math.round(
-    (Date.parse(`${checkout}T00:00:00Z`) - Date.parse(`${checkin}T00:00:00Z`)) / 86400000,
-  );
-}
-
 function nightsKeyboard(): InlineKeyboard {
   const keyboard = new InlineKeyboard();
 
@@ -443,12 +417,122 @@ function startHotelWizard(chatId: number, wizard: BookHotelWizard = {}): BookHot
   return wizard;
 }
 
+function miniAppKeyboard(): InlineKeyboard | undefined {
+  // web_app inline buttons only work in private chats.
+  return webAppUrl
+    ? new InlineKeyboard()
+      .webApp("✈️ Search flights", webAppUrl)
+      .webApp("🏨 Book hotels", `${webAppUrl}/?tab=hotels`)
+    : undefined;
+}
+
 bot.command("start", async (ctx) => {
   await ctx.reply(
     "Hello! I'm your travel agent.\n\n" +
     "Ask me to find flights, hotels, or travel options. " +
-    "Use /bookflight for a guided flight search or /bookhotel to book a hotel."
+    "Use /bookflight for a guided flight search or /bookhotel to book a hotel." +
+    (webAppUrl ? "\n\nOr open the travel app below." : ""),
+    { reply_markup: ctx.chat.type === "private" ? miniAppKeyboard() : undefined },
   );
+});
+
+bot.command("app", async (ctx) => {
+  if (!webAppUrl) {
+    await ctx.reply("The travel app isn't configured yet. Set WEBAPP_URL to a public HTTPS URL.");
+    return;
+  }
+
+  if (ctx.chat.type !== "private") {
+    await ctx.reply(`Open the travel app in a private chat with @${ctx.me.username}.`);
+    return;
+  }
+
+  await ctx.reply("Search and book in the travel app:", { reply_markup: miniAppKeyboard() });
+  // A keyboard-button launch can't call the API, so the app sends the search back with sendData.
+  await ctx.reply("Or use quick search from the keyboard below. Results arrive in this chat.", {
+    reply_markup: {
+      keyboard: [[{ text: "🔎 Quick search", web_app: { url: webAppUrl } }]],
+      resize_keyboard: true,
+      is_persistent: false,
+    },
+  });
+});
+
+type WebAppSearch =
+  | { type: "flight_search"; origin?: string; destination?: string; departureDate?: string; returnDate?: string; passengers?: number }
+  | { type: "hotel_search"; destination?: string; checkin?: string; checkout?: string; adults?: number };
+
+bot.on("message:web_app_data", async (ctx) => {
+  let search: WebAppSearch;
+  try {
+    search = JSON.parse(ctx.message.web_app_data.data);
+  } catch {
+    await ctx.reply("I couldn't read that search. Please try again.");
+    return;
+  }
+
+  const isoDate = /^\d{4}-\d{2}-\d{2}$/;
+
+  if (search.type === "flight_search") {
+    if (!search.origin || !search.destination || !isoDate.test(search.departureDate ?? "")) {
+      await ctx.reply("That flight search is missing the route or date. Please try again.");
+      return;
+    }
+
+    const [origin, destination] = await Promise.all([
+      tryResolveAirport(search.origin),
+      tryResolveAirport(search.destination),
+    ]);
+    if (!origin || !destination || origin === destination) {
+      await ctx.reply("I couldn't find those airports. Please try a city name or 3-letter airport code.");
+      return;
+    }
+
+    bookHotelWizards.delete(ctx.chat.id);
+    await sendFlightOffers(ctx, {
+      origin,
+      destination,
+      departureDate: search.departureDate!,
+      returnDate: isoDate.test(search.returnDate ?? "") ? search.returnDate : undefined,
+      passengers: Math.min(Math.max(Number(search.passengers) || 1, 1), 6),
+    });
+    return;
+  }
+
+  if (search.type === "hotel_search") {
+    const { destination, checkin, checkout } = search;
+    if (!destination || !checkin || !checkout || !isoDate.test(checkin) || !isoDate.test(checkout) ||
+        nightsBetween(checkin, checkout) < 1) {
+      await ctx.reply("That hotel search is missing the destination or dates. Please try again.");
+      return;
+    }
+
+    const hotelSearch: HotelSearch = {
+      destination: destination.slice(0, 100),
+      checkin,
+      checkout,
+      adults: Math.min(Math.max(Number(search.adults) || 1, 1), 4),
+    };
+    startHotelWizard(ctx.chat.id, hotelSearch);
+    await sendHotelOffers(ctx, hotelSearch);
+    return;
+  }
+
+  await ctx.reply("I couldn't read that search. Please try again.");
+});
+
+// Inline mode (enable it in @BotFather) offers a button that opens the Mini App.
+bot.on("inline_query", async (ctx) => {
+  if (!webAppUrl) {
+    await ctx.answerInlineQuery([], { cache_time: 0 });
+    return;
+  }
+
+  await ctx.answerInlineQuery([], {
+    cache_time: 0,
+    is_personal: true,
+    button: { text: "✈️ Open travel app", web_app: { url: webAppUrl } },
+  });
 });
 
 bot.command("help", async (ctx) => {
@@ -457,6 +541,7 @@ bot.command("help", async (ctx) => {
     "I'll find options and guide you toward the next action.\n\n" +
     "Book a flight step by step with /bookflight\n" +
     "Book a hotel step by step with /bookhotel\n" +
+    "Open the travel app with /app\n" +
     "Browse a public page with /browse https://example.com\n" +
     "For flights, use:\n" +
     "/flights DEL BOM 2026-12-20\n" +
@@ -833,7 +918,8 @@ bot.callbackQuery(/^flight:(.+)$/, async (ctx) => {
 bot.on("message:text", async (ctx) => {
   const question = ctx.message.text.trim();
 
-  if (question.startsWith("/")) return;
+  // Messages the Mini App posts through answerWebAppQuery arrive "via" this bot.
+  if (question.startsWith("/") || ctx.message.via_bot) return;
 
   const chatId = ctx.chat.id;
   const hotelWizard = bookHotelWizards.get(chatId);
@@ -1082,6 +1168,18 @@ bot.on("message:text", async (ctx) => {
 bot.catch((error) => {
   console.error("Telegram handler error:", error);
 });
+
+const miniAppServer = startMiniAppServer(bot, token, webAppPort);
+console.log(`Mini App server listening on http://localhost:${miniAppServer.port}`);
+
+if (webAppUrl) {
+  // The chat menu button opens the Mini App in every private chat with the bot.
+  bot.api.setChatMenuButton({
+    menu_button: { type: "web_app", text: "Travel app", web_app: { url: webAppUrl } },
+  }).catch((error) => console.error("Could not set the Mini App menu button:", error));
+} else {
+  console.warn("WEBAPP_URL is not set, so the Mini App menu button and /app are disabled.");
+}
 
 bot.start();
 

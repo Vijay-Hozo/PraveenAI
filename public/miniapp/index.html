@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <title>Propzing Travel</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main id="app">
+    <nav class="tabs" id="tabs" role="tablist">
+      <button type="button" role="tab" data-tab="flights" class="active">✈️ Flights</button>
+      <button type="button" role="tab" data-tab="hotels">🏨 Hotels</button>
+    </nav>
+
+    <p class="notice" id="quick-notice" hidden>
+      Quick search: your search will be sent to the chat and the bot will reply with options.
+    </p>
+
+    <!-- Flight search form -->
+    <section class="view" data-view="flights-form">
+      <form id="flight-form" class="card" autocomplete="off">
+        <label>From<input name="origin" placeholder="City or airport, e.g. Dubai or DXB" required maxlength="100"></label>
+        <button type="button" class="swap" id="swap-route" aria-label="Swap origin and destination">⇅</button>
+        <label>To<input name="destination" placeholder="City or airport, e.g. Chennai or MAA" required maxlength="100"></label>
+        <div class="row">
+          <label>Departure<input name="departureDate" type="date" required></label>
+          <label>Return <span class="hint">(optional)</span><input name="returnDate" type="date"></label>
+        </div>
+        <div class="stepper" data-name="passengers" data-min="1" data-max="6" data-unit="passenger">
+          <span>Passengers</span>
+          <button type="button" data-step="-1" aria-label="Fewer">−</button>
+          <output>1</output>
+          <button type="button" data-step="1" aria-label="More">+</button>
+        </div>
+      </form>
+      <div class="chips" id="recent-flights"></div>
+    </section>
+
+    <!-- Hotel search form -->
+    <section class="view" data-view="hotels-form" hidden>
+      <form id="hotel-form" class="card" autocomplete="off">
+        <label>Destination<input name="destination" placeholder="City or area, e.g. Dubai Marina" required maxlength="100"></label>
+        <label>Check-in<input name="checkin" type="date" required></label>
+        <div class="stepper" data-name="nights" data-min="1" data-max="30" data-unit="night">
+          <span>Nights</span>
+          <button type="button" data-step="-1" aria-label="Fewer">−</button>
+          <output>2</output>
+          <button type="button" data-step="1" aria-label="More">+</button>
+        </div>
+        <div class="stepper" data-name="adults" data-min="1" data-max="4" data-unit="adult">
+          <span>Adults</span>
+          <button type="button" data-step="-1" aria-label="Fewer">−</button>
+          <output>1</output>
+          <button type="button" data-step="1" aria-label="More">+</button>
+        </div>
+      </form>
+      <div class="chips" id="recent-hotels"></div>
+    </section>
+
+    <section class="view" data-view="flight-results" hidden>
+      <h2 id="flight-results-title">Flights</h2>
+      <div class="list" id="flight-results"></div>
+    </section>
+
+    <section class="view" data-view="hotel-results" hidden>
+      <h2 id="hotel-results-title">Hotels</h2>
+      <div class="list" id="hotel-results"></div>
+    </section>
+
+    <section class="view" data-view="guest" hidden>
+      <h2>Lead guest</h2>
+      <div class="card summary" id="prebook-summary"></div>
+      <form id="guest-form" class="card" autocomplete="on">
+        <label>First name<input name="firstName" autocomplete="given-name" required maxlength="60"></label>
+        <label>Last name<input name="lastName" autocomplete="family-name" required maxlength="60"></label>
+        <label>Email<input name="email" type="email" autocomplete="email" required maxlength="120"></label>
+      </form>
+    </section>
+
+    <section class="view" data-view="booked" hidden>
+      <div class="success">✅</div>
+      <h2 id="booked-title">Booking confirmed</h2>
+      <div class="card summary" id="booked-summary"></div>
+      <p class="hint center">We've also sent the confirmation to your chat.</p>
+    </section>
+
+    <div class="loading" id="loading" hidden><span class="spinner"></span><span id="loading-text">Searching…</span></div>
+
+    <!-- Shown only outside Telegram, where the native bottom buttons don't exist -->
+    <div class="fallback-buttons" id="fallback-buttons" hidden>
+      <button type="button" class="secondary" id="fallback-secondary" hidden></button>
+      <button type="button" id="fallback-main" hidden></button>
+    </div>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
