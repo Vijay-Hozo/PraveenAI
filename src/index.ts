@@ -9,6 +9,7 @@ import { browsePublicPage } from "./services/browserbase";
 import {
   searchFlights,
   resolveAirportCode,
+  loadAirportDirectoryOnce,
   type FlightOffer,
   type FlightSearch,
 } from "./services/flights/duffel";
@@ -1173,6 +1174,11 @@ bot.on("message:text", async (ctx) => {
 bot.catch((error) => {
   console.error("Telegram handler error:", error);
 });
+
+// Download the airport directory at boot so the first search doesn't wait for it.
+loadAirportDirectoryOnce()
+  .then((airports) => console.log(`Loaded ${airports.length} airports`))
+  .catch((error) => console.error("Airport directory preload failed:", error));
 
 const miniAppServer = startMiniAppServer(bot, token, webAppPort);
 console.log(`Mini App server listening on http://localhost:${miniAppServer.port}`);

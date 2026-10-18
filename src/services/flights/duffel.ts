@@ -42,6 +42,7 @@ export async function duffelRequest<T>(
   options: {
     method?: "GET" | "POST";
     body?: unknown;
+    timeoutMs?: number;
   } = {},
 ): Promise<T> {
   const response = await fetch(`${baseUrl}${path}`, {
@@ -55,7 +56,7 @@ export async function duffelRequest<T>(
     body: options.body
       ? JSON.stringify(options.body)
       : undefined,
-    signal: AbortSignal.timeout(20000),
+    signal: AbortSignal.timeout(options.timeoutMs ?? 20000),
   });
 
   if (!response.ok) {
@@ -106,8 +107,11 @@ export async function searchFlights(
         }>;
       }>;
     };
-  }>("/air/offer_requests", {
+  // supplier_timeout makes Duffel return the airlines that answered within 15s
+  // instead of waiting on slow ones; the client timeout leaves room for that.
+  }>("/air/offer_requests?supplier_timeout=15000", {
     method: "POST",
+    timeoutMs: 40000,
     body: {
       data: {
         slices,
@@ -170,11 +174,24 @@ async function loadAirportDirectory(): Promise<DuffelAirport[]> {
   return airports;
 }
 
+// Cached for the process lifetime; a failed load is dropped so the next call retries.
+export function loadAirportDirectoryOnce(): Promise<DuffelAirport[]> {
+  airportDirectoryPromise ??= loadAirportDirectory().catch((error) => {
+    airportDirectoryPromise = undefined;
+    throw error;
+  });
+  return airportDirectoryPromise;
+}
+
 export async function resolveAirportCode(
   location: string,
 ): Promise<string | undefined> {
-  airportDirectoryPromise ??= loadAirportDirectory();
-  const airports = await airportDirectoryPromise;
+  const airports = await loadAirportDirectoryOnce().catch((error) => {
+    // Airport codes can still be searched while the directory is unavailable.
+    if (/^[A-Za-z]{3}$/.test(location.trim())) return undefined;
+    throw error;
+  });
+  if (!airports) return location.trim().toUpperCase();
   const locationAliases: Record<string, string> = {
     cochin: "kochi",
     kochin: "kochi",

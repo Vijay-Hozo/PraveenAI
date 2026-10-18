@@ -65,6 +65,7 @@ function requireCount(value: unknown, name: string, max: number): number {
 }
 
 function upstreamError(error: unknown): HttpError {
+  console.error("Mini App upstream error:", error);
   const details = error instanceof Error
     ? error.message.replace(/^Error:\s*/, "").slice(0, 300)
     : "Unknown error";
