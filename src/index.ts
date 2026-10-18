@@ -1,6 +1,6 @@
 
 import "dotenv/config";
-import { Bot } from "grammy";
+import { Bot, GrammyError } from "grammy";
 import { InlineKeyboard } from "grammy";
 import type { Context } from "grammy";
 import { searchWeb } from "./services/brave";
@@ -32,8 +32,13 @@ if (!token) {
 }
 
 // Public HTTPS URL that serves public/miniapp (Telegram rejects plain HTTP).
-const webAppUrl = process.env.WEBAPP_URL?.replace(/\/+$/, "");
-const webAppPort = Number(process.env.WEBAPP_PORT || 3000);
+// On Railway it defaults to the service's generated public domain.
+const webAppHost = process.env.WEBAPP_URL || process.env.RAILWAY_PUBLIC_DOMAIN;
+const webAppUrl = webAppHost
+  ?.replace(/^(?!https?:\/\/)/, "https://")
+  .replace(/\/+$/, "");
+// Railway and similar hosts assign the port through PORT.
+const webAppPort = Number(process.env.PORT || process.env.WEBAPP_PORT || 3000);
 
 const bot = new Bot(token);
 const flightOffers = new Map<string, FlightOffer>();
@@ -1181,6 +1186,19 @@ if (webAppUrl) {
   console.warn("WEBAPP_URL is not set, so the Mini App menu button and /app are disabled.");
 }
 
-bot.start();
+// During a redeploy the previous instance keeps polling for a few seconds, and
+// Telegram rejects the second poller with 409. Wait for it to stop instead of crashing.
+async function startPolling(): Promise<void> {
+  try {
+    await bot.start({ onStart: () => console.log("Telegram AI bot is running...") });
+  } catch (error) {
+    if (error instanceof GrammyError && error.error_code === 409) {
+      console.warn("Another bot instance is still running. Retrying in 10 seconds...");
+      setTimeout(startPolling, 10000);
+      return;
+    }
+    throw error;
+  }
+}
 
-console.log("Telegram AI bot is running...");
+startPolling();
