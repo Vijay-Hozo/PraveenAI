@@ -22,6 +22,7 @@
     hotels: [],
     selectedHotel: null,
     prebook: null,
+    food: { area: "", restaurants: [], restaurant: null, menu: [], cart: new Map(), order: null, poll: null },
   };
 
   // ---------- Telegram helpers ----------
@@ -211,6 +212,10 @@
     "hotel-results": "hotels-form",
     guest: "hotel-results",
     booked: "hotels-form",
+    "food-results": "food-form",
+    "food-menu": "food-results",
+    "food-checkout": "food-menu",
+    "food-ordered": "food-form",
   };
 
   const views = {
@@ -239,6 +244,35 @@
         : { text: "Booking needs a LiteAPI sandbox key", enabled: false });
       setSecondary(null);
     },
+    "food-form": () => {
+      setMain(canUseApi
+        ? { text: "Find restaurants", onClick: submitFoodSearch }
+        : { text: "Open from the menu button to order food", enabled: false });
+      setSecondary(null);
+    },
+    "food-results": () => {
+      setMain(null);
+      setSecondary(null);
+    },
+    "food-menu": () => {
+      const { restaurant } = state.food;
+      const { count, subtotal } = cartTotals();
+      if (!count) setMain(null);
+      else if (subtotal < restaurant.minimumOrder) {
+        setMain({ text: `Add ${money(restaurant.minimumOrder - subtotal)} more to order`, enabled: false });
+      } else {
+        setMain({ text: `View cart · ${plural(count, "item")} · ${money(subtotal)}`, onClick: openCheckout });
+      }
+      setSecondary(count ? { text: "Clear cart", onClick: clearCart } : null);
+    },
+    "food-checkout": () => {
+      setMain({ text: `Place order · ${money(cartTotals().total)}`, onClick: placeFoodOrder, shine: true });
+      setSecondary(null);
+    },
+    "food-ordered": () => {
+      setMain({ text: "Done", onClick: () => (inTelegram ? tg.close() : show("food-form")) });
+      setSecondary(null);
+    },
     booked: () => {
       setMain({ text: "Done", onClick: () => tg.close() });
       setSecondary(supports("8.0") && state.selectedHotel && {
@@ -260,9 +294,11 @@
       if (isForm) tg.BackButton.hide();
       else tg.BackButton.show();
     }
-    // Ask before closing while the guest form holds a prebooked room.
+    if (view !== "food-ordered") stopOrderPolling();
+
+    // Ask before closing while the guest form holds a prebooked room or a food cart is in checkout.
     if (supports("6.2")) {
-      if (view === "guest") tg.enableClosingConfirmation();
+      if (view === "guest" || view === "food-checkout") tg.enableClosingConfirmation();
       else tg.disableClosingConfirmation();
     }
 
@@ -541,6 +577,293 @@
     });
   }
 
+  // ---------- Food ordering (test) ----------
+
+  // Mirrors the server's fees so the cart shows the total before ordering.
+  const SERVICE_FEE = 2;
+  const VAT_RATE = 0.05;
+  const CUISINES = ["Biryani", "Shawarma", "Pizza", "Sushi", "Burgers", "Healthy", "Coffee"];
+
+  function money(amount) {
+    return `AED ${amount.toFixed(2)}`;
+  }
+
+  function cartTotals() {
+    const { restaurant, menu, cart } = state.food;
+    let count = 0;
+    let subtotal = 0;
+    for (const [itemId, quantity] of cart) {
+      const item = menu.find((menuItem) => menuItem.id === itemId);
+      if (!item) continue;
+      count += quantity;
+      subtotal += item.price * quantity;
+    }
+    const deliveryFee = restaurant?.deliveryFee ?? 0;
+    const vat = Math.round((subtotal + deliveryFee + SERVICE_FEE) * VAT_RATE * 100) / 100;
+    return { count, subtotal, deliveryFee, vat, total: subtotal + deliveryFee + SERVICE_FEE + vat };
+  }
+
+  async function submitFoodSearch() {
+    const data = readForm($("#food-form"));
+    if (!data) return;
+
+    run(async () => {
+      state.food.restaurants = [];
+      $("#food-results").replaceChildren();
+      $("#food-results-title").textContent = data.area;
+      show("food-results");
+      setLoading(true, "Finding restaurants…");
+
+      const result = await api("/api/food/restaurants", { area: data.area, query: data.query || undefined });
+      state.food.area = result.area;
+      state.food.restaurants = result.restaurants;
+      $("#food-form").area.value = result.area;
+      await storage.set("food_area", result.area);
+
+      $("#food-results-title").textContent = data.query ? `${data.query} in ${result.area}` : `Restaurants in ${result.area}`;
+      renderRestaurants();
+      haptic.notify(result.restaurants.length ? "success" : "warning");
+    }, () => show("food-form"));
+  }
+
+  function renderRestaurants() {
+    renderOffers($("#food-results"), state.food.restaurants, "No restaurants found. Try another area or dish.", (restaurant) => {
+      const card = el("button", "offer");
+      card.type = "button";
+      const top = el("div", "top");
+      top.append(el("span", "", `${restaurant.emoji} ${restaurant.name}`), el("span", "price", `⭐ ${restaurant.rating}`));
+      card.append(
+        top,
+        el("div", "meta", `${restaurant.cuisine} · ${restaurant.etaMinutes} min`),
+        el("span", "tag", [
+          restaurant.deliveryFee ? `Delivery ${money(restaurant.deliveryFee)}` : "Free delivery",
+          `Min ${money(restaurant.minimumOrder)}`,
+        ].join(" · ")),
+      );
+      return card;
+    }, openRestaurant);
+  }
+
+  function openRestaurant(restaurant) {
+    run(async () => {
+      setLoading(true, "Loading menu…");
+      const { menu } = await api("/api/food/menu", { restaurantId: restaurant.id });
+      // A cart only holds items from one restaurant.
+      if (state.food.restaurant?.id !== restaurant.id) state.food.cart = new Map();
+      state.food.restaurant = restaurant;
+      state.food.menu = menu;
+
+      $("#food-menu-title").textContent = `${restaurant.emoji} ${restaurant.name}`;
+      $("#food-menu-meta").textContent =
+        `${restaurant.cuisine} · ⭐ ${restaurant.rating} · ${restaurant.etaMinutes} min · Min order ${money(restaurant.minimumOrder)}`;
+      renderMenu();
+      show("food-menu");
+    });
+  }
+
+  function renderMenu() {
+    const groups = new Map();
+    for (const item of state.food.menu) {
+      if (!groups.has(item.category)) groups.set(item.category, []);
+      groups.get(item.category).push(item);
+    }
+
+    const sections = [];
+    for (const [category, items] of groups) {
+      const card = el("div", "card menu-group");
+      card.append(el("div", "menu-category", category), ...items.map(menuRow));
+      sections.push(card);
+    }
+    $("#food-menu").replaceChildren(...sections);
+  }
+
+  function menuRow(item) {
+    const row = el("div", "menu-item");
+    const info = el("div", "info");
+    info.append(el("div", "name", `${item.veg ? "🟢 " : ""}${item.name}`));
+    if (item.description) info.append(el("div", "hint", item.description));
+    info.append(el("div", "item-price", money(item.price)));
+
+    const control = el("div", "qty");
+    const update = () => {
+      const quantity = state.food.cart.get(item.id) ?? 0;
+      if (!quantity) {
+        const add = el("button", "add", "Add");
+        add.type = "button";
+        add.addEventListener("click", () => changeQuantity(item.id, 1, update));
+        control.replaceChildren(add);
+        return;
+      }
+      const minus = el("button", "", "−");
+      const plus = el("button", "", "+");
+      minus.type = plus.type = "button";
+      minus.setAttribute("aria-label", `Remove one ${item.name}`);
+      plus.setAttribute("aria-label", `Add one ${item.name}`);
+      minus.addEventListener("click", () => changeQuantity(item.id, -1, update));
+      plus.addEventListener("click", () => changeQuantity(item.id, 1, update));
+      control.replaceChildren(minus, el("output", "", String(quantity)), plus);
+    };
+    update();
+
+    row.append(info, control);
+    return row;
+  }
+
+  function changeQuantity(itemId, step, update) {
+    const { cart } = state.food;
+    const next = (cart.get(itemId) ?? 0) + step;
+    if (next > 20) {
+      haptic.notify("warning");
+      return;
+    }
+    if (next <= 0) cart.delete(itemId);
+    else cart.set(itemId, next);
+    haptic.impact("light");
+    update();
+    views["food-menu"]();
+  }
+
+  async function clearCart() {
+    if (!(await showConfirm("Remove all items from your cart?"))) return;
+    state.food.cart = new Map();
+    renderMenu();
+    views["food-menu"]();
+  }
+
+  async function openCheckout() {
+    const { restaurant, menu, cart } = state.food;
+    const totals = cartTotals();
+    const summary = $("#food-cart-summary");
+    summary.replaceChildren(el("div", "", `${restaurant.emoji} ${restaurant.name}`));
+    for (const [itemId, quantity] of cart) {
+      const item = menu.find((menuItem) => menuItem.id === itemId);
+      if (!item) continue;
+      summary.append(lineRow(`${quantity} × ${item.name}`, money(item.price * quantity)));
+    }
+    summary.append(
+      lineRow("Delivery fee", totals.deliveryFee ? money(totals.deliveryFee) : "Free", "hint"),
+      lineRow("Service fee", money(SERVICE_FEE), "hint"),
+      lineRow("VAT (5%)", money(totals.vat), "hint"),
+      lineRow("Total", money(totals.total), "price"),
+      el("div", "hint", `Delivering to ${state.food.area}`),
+    );
+
+    const form = $("#delivery-form");
+    const saved = await getJson("delivery", null);
+    const user = tg?.initDataUnsafe?.user;
+    form.name.value ||= saved?.name ?? [user?.first_name, user?.last_name].filter(Boolean).join(" ");
+    form.phone.value ||= saved?.phone ?? "";
+    form.address.value ||= saved?.address ?? "";
+
+    haptic.impact("light");
+    show("food-checkout");
+  }
+
+  function lineRow(label, value, className = "") {
+    const row = el("div", `line ${className}`.trim());
+    row.append(el("span", "", label), el("span", "", value));
+    return row;
+  }
+
+  async function placeFoodOrder() {
+    const delivery = readForm($("#delivery-form"));
+    if (!delivery) return;
+
+    const { restaurant, cart, area } = state.food;
+    const confirmed = await showConfirm(
+      `Place a test order from ${restaurant.name} for ${money(cartTotals().total)} to ${delivery.address}, ${area}?`,
+    );
+    if (!confirmed) return;
+
+    run(async () => {
+      setMainProgress(true);
+      const order = await api("/api/food/order", {
+        restaurantId: restaurant.id,
+        area,
+        lines: [...cart].map(([itemId, quantity]) => ({ itemId, quantity })),
+        delivery,
+      });
+      await storage.set("delivery", JSON.stringify({ name: delivery.name, phone: delivery.phone, address: delivery.address }));
+
+      state.food.order = order;
+      state.food.cart = new Map();
+      $("#food-order-summary").replaceChildren(
+        el("div", "", `${restaurant.emoji} ${order.restaurantName}`),
+        ...order.lines.map((line) => lineRow(`${line.quantity} × ${line.name}`, money(line.total))),
+        lineRow("Total (cash on delivery)", money(order.total), "price"),
+        el("div", "hint", `Order ID: ${order.orderId}`),
+      );
+      renderOrderStatus(order.status);
+      haptic.notify("success");
+      show("food-ordered");
+      startOrderPolling();
+    });
+  }
+
+  const STATUS_STEPS = [
+    { status: "placed", label: "Order placed", emoji: "🧾" },
+    { status: "preparing", label: "Preparing your food", emoji: "👨‍🍳" },
+    { status: "out_for_delivery", label: "Rider on the way", emoji: "🛵" },
+    { status: "delivered", label: "Delivered", emoji: "✅" },
+  ];
+
+  function renderOrderStatus(status) {
+    const currentIndex = Math.max(0, STATUS_STEPS.findIndex((step) => step.status === status));
+    const current = STATUS_STEPS[currentIndex];
+    $("#food-status-emoji").textContent = current.emoji;
+    $("#food-status-title").textContent = status === "delivered"
+      ? "Enjoy your meal!"
+      : `${current.label} · ETA ${state.food.order?.etaMinutes ?? "–"} min`;
+    $("#food-timeline").replaceChildren(...STATUS_STEPS.map((step, index) =>
+      el("li", index < currentIndex ? "done" : index === currentIndex ? "current" : "", step.label)));
+  }
+
+  function startOrderPolling() {
+    stopOrderPolling();
+    state.food.poll = setInterval(async () => {
+      const { order } = state.food;
+      if (!order) return stopOrderPolling();
+      try {
+        const { status } = await api("/api/food/status", { orderId: order.orderId });
+        if (status !== order.status) {
+          order.status = status;
+          renderOrderStatus(status);
+          haptic.notify("success");
+        }
+        if (status === "delivered") stopOrderPolling();
+      } catch {
+        stopOrderPolling();
+      }
+    }, 5000);
+  }
+
+  function stopOrderPolling() {
+    clearInterval(state.food.poll);
+    state.food.poll = null;
+  }
+
+  async function setupFood() {
+    const form = $("#food-form");
+    form.area.value = (await storage.get("food_area")) ?? "";
+
+    $("#food-cuisines").replaceChildren(el("span", "label", "Popular"), ...CUISINES.map((cuisine) => {
+      const chip = el("button", "", cuisine);
+      chip.type = "button";
+      chip.addEventListener("click", () => { haptic.select(); form.query.value = cuisine; });
+      return chip;
+    }));
+
+    if (canUseApi) {
+      api("/api/food/areas").then(({ areas }) => {
+        $("#food-areas").replaceChildren(...areas.map((area) => {
+          const option = document.createElement("option");
+          option.value = area;
+          return option;
+        }));
+      }).catch(() => {});
+    }
+  }
+
   // ---------- Recent searches ----------
 
   async function saveRecent(key, item, identity) {
@@ -595,7 +918,7 @@
 
     tg.showPopup({
       title: "Settings",
-      message: "Recent searches and guest details are saved to your Telegram account.",
+      message: "Recent searches, guest and delivery details are saved to your Telegram account.",
       buttons,
     }, async (buttonId) => {
       if (buttonId === "fullscreen") {
@@ -604,8 +927,10 @@
       } else if (buttonId === "home") {
         tg.addToHomeScreen();
       } else if (buttonId === "clear") {
-        await storage.remove(["recent_flights", "recent_hotels", "guest"]);
+        await storage.remove(["recent_flights", "recent_hotels", "guest", "food_area", "delivery"]);
         $("#guest-form").reset();
+        $("#delivery-form").reset();
+        $("#food-form").area.value = "";
         renderRecent();
         haptic.notify("success");
       }
@@ -704,15 +1029,16 @@
     }
 
     renderRecent();
+    setupFood();
 
     if (canUseApi) {
       api("/api/config").then((config) => { state.config = config; }).catch(() => {});
     }
 
     // Deep links such as t.me/<bot>/<app>?startapp=hotels and the bot's
-    // "Book hotels" button (?tab=hotels) open the matching tab.
+    // "Book hotels" and "Order food" buttons (?tab=hotels, ?tab=food) open the matching tab.
     const startTab = tg?.initDataUnsafe?.start_param || new URLSearchParams(location.search).get("tab");
-    if (startTab === "hotels") switchTab("hotels");
+    if (startTab === "hotels" || startTab === "food") switchTab(startTab);
     else show("flights-form");
   }
 

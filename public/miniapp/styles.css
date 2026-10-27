@@ -36,7 +36,7 @@ h2 { font-size: 17px; margin: 4px 4px 12px; }
 
 .tabs {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, 1fr);
   gap: 4px;
   padding: 4px;
   background: var(--card);
@@ -175,6 +175,55 @@ input:invalid.touched { color: var(--destructive); }
 .summary div + div { margin-top: 4px; }
 .summary .price { font-weight: 700; color: var(--accent); }
 .summary .warn { color: var(--destructive); font-size: 13px; }
+
+/* Food ordering */
+.menu-meta { margin: -6px 4px 12px; }
+.menu-group { margin-bottom: 12px; }
+.menu-category { font-weight: 700; padding: 10px 0 2px; }
+.menu-item {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--separator);
+}
+.menu-item:last-child { border-bottom: 0; }
+.menu-item .info { min-width: 0; }
+.menu-item .item-price { margin-top: 2px; font-weight: 600; }
+.qty { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.qty output { min-width: 22px; text-align: center; font-weight: 600; }
+.qty button {
+  height: 32px;
+  min-width: 32px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--link);
+  font: inherit;
+  font-size: 17px;
+}
+.qty button.add { padding: 0 14px; font-size: 14px; font-weight: 600; }
+
+.summary .line { display: flex; justify-content: space-between; gap: 12px; }
+.summary .line.hint { font-size: 13px; }
+
+.timeline { list-style: none; margin: 0 0 12px; padding: 8px 14px; }
+.timeline li { position: relative; padding: 8px 0 8px 26px; color: var(--hint); }
+.timeline li::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 13px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid var(--separator);
+}
+.timeline li.done { color: var(--text); }
+.timeline li.done::before { background: var(--accent); border-color: var(--accent); }
+.timeline li.current { color: var(--text); font-weight: 600; }
+.timeline li.current::before { border-color: var(--accent); }
 
 .empty { text-align: center; color: var(--hint); padding: 32px 16px; }
 

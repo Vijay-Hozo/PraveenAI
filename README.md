@@ -105,7 +105,24 @@ rejected.
 
 To use direct links such as `t.me/<bot>/<app>?startapp=hotels`, register the
 app with `/newapp` in @BotFather using the same URL. `startapp=hotels` opens
-the Hotels tab.
+the Hotels tab and `startapp=food` opens the Food tab.
+
+### Food ordering (test mode)
+
+The **Food** tab simulates food delivery in Dubai. No public API lets third
+parties place orders on Talabat, Careem or Deliveroo, so
+`src/services/food/mock.ts` serves fictional restaurants and menus for areas
+such as Dubai Marina, JLT, Downtown Dubai and Deira. Users pick an area, browse
+restaurants, build a cart (one restaurant at a time, with minimum order,
+delivery fee, AED 2 service fee and 5% VAT), enter delivery details and place a
+cash-on-delivery test order.
+
+The order then moves through placed → preparing → out for delivery →
+delivered over about two minutes. The app shows the progress, and the bot posts
+the confirmation and the rider/delivered updates to the chat. Orders are kept
+in memory only. No food is ordered and nothing is charged. To use a real
+provider later, replace `mock.ts` with a module that exports the same
+functions.
 
 ## Browserbase page browsing
 

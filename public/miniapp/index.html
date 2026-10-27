@@ -12,6 +12,7 @@
     <nav class="tabs" id="tabs" role="tablist">
       <button type="button" role="tab" data-tab="flights" class="active">✈️ Flights</button>
       <button type="button" role="tab" data-tab="hotels">🏨 Hotels</button>
+      <button type="button" role="tab" data-tab="food">🍔 Food</button>
     </nav>
 
     <p class="notice" id="quick-notice" hidden>
@@ -57,6 +58,48 @@
         </div>
       </form>
       <div class="chips" id="recent-hotels"></div>
+    </section>
+
+    <!-- Food search form -->
+    <section class="view" data-view="food-form" hidden>
+      <p class="notice">Test mode: fictional Dubai restaurants. Orders are simulated, nothing is delivered or charged.</p>
+      <form id="food-form" class="card" autocomplete="off">
+        <label>Deliver to<input name="area" placeholder="Area, e.g. Dubai Marina or JLT" required maxlength="100" list="food-areas"></label>
+        <label>Craving <span class="hint">(optional)</span><input name="query" placeholder="Biryani, pizza, sushi…" maxlength="60"></label>
+      </form>
+      <datalist id="food-areas"></datalist>
+      <div class="chips" id="food-cuisines"></div>
+    </section>
+
+    <section class="view" data-view="food-results" hidden>
+      <h2 id="food-results-title">Restaurants</h2>
+      <div class="list" id="food-results"></div>
+    </section>
+
+    <section class="view" data-view="food-menu" hidden>
+      <h2 id="food-menu-title">Menu</h2>
+      <p class="hint menu-meta" id="food-menu-meta"></p>
+      <div id="food-menu"></div>
+    </section>
+
+    <section class="view" data-view="food-checkout" hidden>
+      <h2>Checkout</h2>
+      <div class="card summary" id="food-cart-summary"></div>
+      <form id="delivery-form" class="card" autocomplete="on">
+        <label>Name<input name="name" autocomplete="name" required maxlength="60"></label>
+        <label>Phone<input name="phone" type="tel" autocomplete="tel" placeholder="+971 50 123 4567" required maxlength="20" pattern="\+?[\d\s\-]{7,20}"></label>
+        <label>Address<input name="address" autocomplete="street-address" placeholder="Building, flat number, street" required maxlength="200"></label>
+        <label>Notes for rider <span class="hint">(optional)</span><input name="notes" maxlength="200"></label>
+      </form>
+      <p class="hint center">Payment: cash on delivery (test, nothing is charged)</p>
+    </section>
+
+    <section class="view" data-view="food-ordered" hidden>
+      <div class="success" id="food-status-emoji">🧾</div>
+      <h2 class="center" id="food-status-title">Order placed</h2>
+      <ol class="card timeline" id="food-timeline"></ol>
+      <div class="card summary" id="food-order-summary"></div>
+      <p class="hint center">Status updates are also sent to your chat.</p>
     </section>
 
     <section class="view" data-view="flight-results" hidden>

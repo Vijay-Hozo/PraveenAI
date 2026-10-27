@@ -16,6 +16,16 @@ import {
   type HotelOffer,
   type HotelPrebook,
 } from "../services/hotels/liteapi";
+import {
+  DUBAI_AREAS,
+  STATUS_TIMELINE,
+  getMenu,
+  orderStatus,
+  placeOrder,
+  resolveArea,
+  searchRestaurants,
+  type FoodOrder,
+} from "../services/food/mock";
 import { escapeHtml, formatFlightDateTime, nightsBetween } from "../utils/format";
 
 const publicDir = join(import.meta.dir, "..", "..", "public", "miniapp");
@@ -30,6 +40,7 @@ const staticFiles: Record<string, string> = {
 const flightOffers = new Map<string, FlightOffer>();
 const hotelOffers = new Map<string, HotelOffer>();
 const prebooks = new Map<string, { userId: number; offer: HotelOffer; prebook: HotelPrebook }>();
+const foodOrders = new Map<string, FoodOrder>();
 
 class HttpError extends Error {
   constructor(readonly status: number, message: string) {
@@ -98,6 +109,30 @@ function hotelSummaryHtml(offer: HotelOffer, price = offer.totalAmount, currency
     `${escapeHtml(offer.checkin)} → ${escapeHtml(offer.checkout)} · ${nights} ${nights === 1 ? "night" : "nights"}`,
     `<b>${escapeHtml(currency)} ${price.toFixed(2)}</b>`,
   ].filter(Boolean).join("\n");
+}
+
+function foodOrderHtml(order: FoodOrder): string {
+  return [
+    `<b>🍽 ${escapeHtml(order.restaurantName)}</b>`,
+    ...order.lines.map((line) => `${line.quantity} × ${escapeHtml(line.name)} · ${order.currency} ${line.total.toFixed(2)}`),
+    `Delivery to ${escapeHtml(order.delivery.address)}, ${escapeHtml(order.area)}`,
+    `<b>Total ${order.currency} ${order.total.toFixed(2)}</b> (cash on delivery)`,
+  ].join("\n");
+}
+
+// Posts the simulated status changes to the chat as the order progresses.
+function scheduleFoodUpdates(bot: Bot, order: FoodOrder) {
+  for (const step of STATUS_TIMELINE) {
+    if (step.status !== "out_for_delivery" && step.status !== "delivered") continue;
+    setTimeout(() => {
+      const emoji = step.status === "delivered" ? "✅" : "🛵";
+      bot.api.sendMessage(
+        order.userId,
+        `${emoji} <b>${escapeHtml(step.label)}</b>\n${escapeHtml(order.restaurantName)} · Order <code>${escapeHtml(order.orderId)}</code>`,
+        { parse_mode: "HTML" },
+      ).catch((error) => console.error("Food status message error:", error));
+    }, step.afterSeconds * 1000);
+  }
 }
 
 function article(id: string, title: string, description: string, html: string): InlineQueryResultArticle {
@@ -219,6 +254,68 @@ const api: Record<string, ApiHandler> = {
     ).catch((error) => console.error("Mini App booking message error:", error));
 
     return booking;
+  },
+
+  "/api/food/areas": async () => ({ areas: DUBAI_AREAS }),
+
+  "/api/food/restaurants": async (body) => {
+    const input = requireString(body.area, "area");
+    const area = resolveArea(input);
+    if (!area) throw new HttpError(400, `We don't deliver to "${input}" yet. Try ${DUBAI_AREAS.slice(0, 3).join(", ")}…`);
+    const query = typeof body.query === "string" ? body.query.slice(0, 60) : undefined;
+    return { area, restaurants: await searchRestaurants({ area, query }) };
+  },
+
+  "/api/food/menu": async (body) => {
+    const result = await getMenu(requireString(body.restaurantId, "restaurantId", 20));
+    if (!result) throw new HttpError(404, "Restaurant not found");
+    return result;
+  },
+
+  "/api/food/order": async (body, auth, bot) => {
+    const rawLines = Array.isArray(body.lines) ? body.lines.slice(0, 30) : [];
+    const lines = rawLines.map((line: Record<string, unknown>) => ({
+      itemId: requireString(line?.itemId, "itemId", 20),
+      quantity: requireCount(line?.quantity, "quantity", 20),
+    }));
+
+    const deliveryBody = (body.delivery ?? {}) as Record<string, unknown>;
+    const delivery = {
+      name: requireString(deliveryBody.name, "name", 60),
+      phone: requireString(deliveryBody.phone, "phone", 20),
+      address: requireString(deliveryBody.address, "address", 200),
+      notes: typeof deliveryBody.notes === "string" ? deliveryBody.notes.trim().slice(0, 200) || undefined : undefined,
+    };
+    if (!/^\+?[\d\s-]{7,20}$/.test(delivery.phone)) throw new HttpError(400, "Enter a valid phone number");
+
+    const area = resolveArea(requireString(body.area, "area"));
+    if (!area) throw new HttpError(400, "Unknown delivery area");
+
+    const order = await placeOrder({
+      userId: auth.user.id,
+      restaurantId: requireString(body.restaurantId, "restaurantId", 20),
+      area,
+      lines,
+      delivery,
+    }).catch((error) => { throw new HttpError(400, error instanceof Error ? error.message : "Couldn't place the order"); });
+    foodOrders.set(order.orderId, order);
+
+    await bot.api.sendMessage(
+      auth.user.id,
+      `<b>🧾 Order placed</b>\n${foodOrderHtml(order)}\n` +
+      `Order ID: <code>${escapeHtml(order.orderId)}</code> · ETA ${order.etaMinutes} min\n\n` +
+      "This is a test order. No food is prepared and no payment is taken.",
+      { parse_mode: "HTML" },
+    ).catch((error) => console.error("Mini App food message error:", error));
+    scheduleFoodUpdates(bot, order);
+
+    return { ...order, ...orderStatus(order) };
+  },
+
+  "/api/food/status": async (body, auth) => {
+    const order = foodOrders.get(requireString(body.orderId, "orderId", 40));
+    if (!order || order.userId !== auth.user.id) throw new HttpError(404, "Order not found");
+    return orderStatus(order);
   },
 
   // Prepares a message the user can forward with WebApp.shareMessage().

@@ -429,6 +429,8 @@ function miniAppKeyboard(): InlineKeyboard | undefined {
     ? new InlineKeyboard()
       .webApp("✈️ Search flights", webAppUrl)
       .webApp("🏨 Book hotels", `${webAppUrl}/?tab=hotels`)
+      .row()
+      .webApp("🍔 Order food (test)", `${webAppUrl}/?tab=food`)
     : undefined;
 }
 
