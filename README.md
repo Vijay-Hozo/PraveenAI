@@ -110,19 +110,41 @@ the Hotels tab and `startapp=food` opens the Food tab.
 ### Food ordering (test mode)
 
 The **Food** tab simulates food delivery in Dubai. No public API lets third
-parties place orders on Talabat, Careem or Deliveroo, so
-`src/services/food/mock.ts` serves fictional restaurants and menus for areas
-such as Dubai Marina, JLT, Downtown Dubai and Deira. Users pick an area, browse
-restaurants, build a cart (one restaurant at a time, with minimum order,
-delivery fee, AED 2 service fee and 5% VAT), enter delivery details and place a
-cash-on-delivery test order.
+parties place orders on Talabat, Careem or Deliveroo, so it combines free
+data sources and simulates the rest (`src/services/food/`):
 
-The order then moves through placed → preparing → out for delivery →
-delivered over about two minutes. The app shows the progress, and the bot posts
-the confirmation and the rider/delivered updates to the chat. Orders are kept
-in memory only. No food is ordered and nothing is charged. To use a real
-provider later, replace `mock.ts` with a module that exports the same
-functions.
+- **Restaurants**: real restaurants, cafés and fast-food places from
+  [OpenStreetMap](https://www.openstreetmap.org/copyright) (Overpass API, no
+  key) within 1.2 km of the chosen area: Dubai Marina, JBR, JLT, Downtown
+  Dubai, Business Bay, DIFC, Deira, Bur Dubai, Jumeirah or Al Barsha. Shows
+  name, cuisine, distance, address and opening hours when OpenStreetMap has
+  them.
+- **Menus**: dishes and photos from [TheMealDB](https://www.themealdb.com/api.php)
+  (free test key `1`) that match the restaurant's cuisine, without pork or
+  alcohol. These are not the restaurant's real menu.
+- **Simulated**: prices, delivery fees, minimum orders, ordering and delivery
+  tracking.
+
+The public Overpass servers are often busy and take 10-20s per query, so the
+bot serves `src/services/food/osm-snapshot.json` immediately and refreshes
+each area from Overpass in the background (cached for 12 hours). If
+neither works, fictional sample restaurants (`sample.ts`) are shown. Refresh
+the snapshot with:
+
+```bash
+bun run scripts/update-food-snapshot.ts
+```
+
+Users pick an area, browse restaurants, build a cart (one restaurant at a
+time, with minimum order, delivery fee, AED 2 service fee and 5% VAT), enter
+delivery details and place a cash-on-delivery test order. The order then
+moves through placed → preparing → out for delivery → delivered over about
+two minutes. The app shows the progress, and the bot posts the confirmation
+and the rider/delivered updates to the chat. Orders are kept in memory only.
+No food is ordered and nothing is charged.
+
+No API key is needed. `THEMEALDB_API_KEY` is optional and only for a
+TheMealDB premium key.
 
 ## Browserbase page browsing
 

@@ -611,8 +611,10 @@
       state.food.restaurants = [];
       $("#food-results").replaceChildren();
       $("#food-results-title").textContent = data.area;
+      $("#food-source-notice").hidden = true;
       show("food-results");
-      setLoading(true, "Finding restaurants…");
+      // OpenStreetMap can take ~20s the first time an area is searched.
+      setLoading(true, "Finding restaurants nearby…");
 
       const result = await api("/api/food/restaurants", { area: data.area, query: data.query || undefined });
       state.food.area = result.area;
@@ -621,6 +623,7 @@
       await storage.set("food_area", result.area);
 
       $("#food-results-title").textContent = data.query ? `${data.query} in ${result.area}` : `Restaurants in ${result.area}`;
+      $("#food-source-notice").hidden = result.source !== "sample";
       renderRestaurants();
       haptic.notify(result.restaurants.length ? "success" : "warning");
     }, () => show("food-form"));
@@ -631,10 +634,14 @@
       const card = el("button", "offer");
       card.type = "button";
       const top = el("div", "top");
-      top.append(el("span", "", `${restaurant.emoji} ${restaurant.name}`), el("span", "price", `⭐ ${restaurant.rating}`));
+      top.append(
+        el("span", "", `${restaurant.emoji} ${restaurant.name}`),
+        el("span", "price", restaurant.rating ? `⭐ ${restaurant.rating}` : `📍 ${restaurant.distanceKm} km`),
+      );
+      card.append(top, el("div", "meta", `${restaurant.cuisine} · ${restaurant.etaMinutes} min`));
+      if (restaurant.address) card.append(el("div", "meta", restaurant.address));
+      if (restaurant.openingHours) card.append(el("div", "meta", `🕒 ${restaurant.openingHours}`));
       card.append(
-        top,
-        el("div", "meta", `${restaurant.cuisine} · ${restaurant.etaMinutes} min`),
         el("span", "tag", [
           restaurant.deliveryFee ? `Delivery ${money(restaurant.deliveryFee)}` : "Free delivery",
           `Min ${money(restaurant.minimumOrder)}`,
@@ -654,8 +661,12 @@
       state.food.menu = menu;
 
       $("#food-menu-title").textContent = `${restaurant.emoji} ${restaurant.name}`;
-      $("#food-menu-meta").textContent =
-        `${restaurant.cuisine} · ⭐ ${restaurant.rating} · ${restaurant.etaMinutes} min · Min order ${money(restaurant.minimumOrder)}`;
+      $("#food-menu-meta").textContent = [
+        restaurant.cuisine,
+        restaurant.rating ? `⭐ ${restaurant.rating}` : `${restaurant.distanceKm} km away`,
+        `${restaurant.etaMinutes} min`,
+        `Min order ${money(restaurant.minimumOrder)}`,
+      ].join(" · ");
       renderMenu();
       show("food-menu");
     });
@@ -679,6 +690,14 @@
 
   function menuRow(item) {
     const row = el("div", "menu-item");
+    if (item.image) {
+      const image = el("img", "thumb");
+      image.src = item.image;
+      image.alt = "";
+      image.loading = "lazy";
+      image.addEventListener("error", () => image.remove());
+      row.append(image);
+    }
     const info = el("div", "info");
     info.append(el("div", "name", `${item.veg ? "🟢 " : ""}${item.name}`));
     if (item.description) info.append(el("div", "hint", item.description));

@@ -1,90 +1,12 @@
-// Test-only food ordering provider. No public API lets third parties place
-// orders on Talabat, Careem or Deliveroo in Dubai, so this serves fictional
-// restaurants and simulates delivery. A real provider can replace it later
-// by exporting the same functions.
+// Fictional restaurants used when OpenStreetMap is unavailable or has no
+// places for an area, so the Food tab always has something to order from.
 
-export const DUBAI_AREAS = [
-  "Dubai Marina",
-  "JBR",
-  "JLT",
-  "Downtown Dubai",
-  "Business Bay",
-  "DIFC",
-  "Deira",
-  "Bur Dubai",
-  "Jumeirah",
-  "Al Barsha",
-] as const;
+import { DUBAI_AREAS } from "./areas";
+import type { MenuItem, Restaurant } from "./types";
 
-export type MenuItem = {
-  id: string;
-  name: string;
-  description: string;
-  price: number;
-  category: string;
-  veg?: boolean;
-};
+type SampleRestaurant = Omit<Restaurant, "source"> & { menu: MenuItem[] };
 
-type Restaurant = {
-  id: string;
-  name: string;
-  cuisine: string;
-  emoji: string;
-  rating: number;
-  prepMinutes: number;
-  deliveryFee: number;
-  minimumOrder: number;
-  areas: readonly string[];
-  menu: MenuItem[];
-};
-
-export type RestaurantSummary = Omit<Restaurant, "menu" | "areas"> & {
-  etaMinutes: number;
-};
-
-export type FoodOrderLine = { itemId: string; quantity: number };
-
-export type FoodDelivery = {
-  name: string;
-  phone: string;
-  address: string;
-  notes?: string;
-};
-
-export type FoodOrderStatus = "placed" | "preparing" | "out_for_delivery" | "delivered";
-
-export type FoodOrder = {
-  orderId: string;
-  userId: number;
-  restaurantId: string;
-  restaurantName: string;
-  area: string;
-  lines: { name: string; quantity: number; unitPrice: number; total: number }[];
-  subtotal: number;
-  deliveryFee: number;
-  serviceFee: number;
-  vat: number;
-  total: number;
-  currency: "AED";
-  delivery: FoodDelivery;
-  createdAt: number;
-  etaMinutes: number;
-};
-
-const CURRENCY = "AED";
-const SERVICE_FEE = 2;
-const VAT_RATE = 0.05;
-
-// Simulated timeline in seconds after the order, compressed so a test run
-// finishes in a couple of minutes.
-export const STATUS_TIMELINE: { status: FoodOrderStatus; afterSeconds: number; label: string }[] = [
-  { status: "placed", afterSeconds: 0, label: "Order placed" },
-  { status: "preparing", afterSeconds: 15, label: "Restaurant is preparing your food" },
-  { status: "out_for_delivery", afterSeconds: 60, label: "Rider is on the way" },
-  { status: "delivered", afterSeconds: 120, label: "Delivered" },
-];
-
-const ALL = DUBAI_AREAS;
+const ALL = DUBAI_AREAS.map((area) => area.name);
 const WEST = ["Dubai Marina", "JBR", "JLT", "Al Barsha"];
 const CENTRAL = ["Downtown Dubai", "Business Bay", "DIFC", "Jumeirah"];
 const OLD_DUBAI = ["Deira", "Bur Dubai", "Downtown Dubai"];
@@ -93,7 +15,7 @@ function items(prefix: string, list: Omit<MenuItem, "id">[]): MenuItem[] {
   return list.map((item, index) => ({ id: `${prefix}-${index + 1}`, ...item }));
 }
 
-const restaurants: Restaurant[] = [
+export const sampleRestaurants: SampleRestaurant[] = [
   {
     id: "r1", name: "Saffron Lane", cuisine: "Indian", emoji: "🍛", rating: 4.6,
     prepMinutes: 20, deliveryFee: 5, minimumOrder: 30, areas: ALL,
@@ -214,94 +136,3 @@ const restaurants: Restaurant[] = [
     ]),
   },
 ];
-
-const byId = new Map(restaurants.map((restaurant) => [restaurant.id, restaurant]));
-
-function round(value: number): number {
-  return Math.round(value * 100) / 100;
-}
-
-// Matches "marina" to "Dubai Marina", "downtown" to "Downtown Dubai", etc.
-export function resolveArea(input: string): string | undefined {
-  const needle = input.trim().toLowerCase();
-  if (!needle) return undefined;
-  return DUBAI_AREAS.find((area) => area.toLowerCase() === needle) ??
-    DUBAI_AREAS.find((area) => area.toLowerCase().includes(needle) || needle.includes(area.toLowerCase()));
-}
-
-function summarize(restaurant: Restaurant): RestaurantSummary {
-  const { menu: _menu, areas: _areas, ...summary } = restaurant;
-  return { ...summary, etaMinutes: restaurant.prepMinutes + 15 };
-}
-
-export async function searchRestaurants(params: { area: string; query?: string }): Promise<RestaurantSummary[]> {
-  const query = params.query?.trim().toLowerCase();
-
-  return restaurants
-    .filter((restaurant) => restaurant.areas.includes(params.area))
-    .filter((restaurant) =>
-      !query ||
-      restaurant.name.toLowerCase().includes(query) ||
-      restaurant.cuisine.toLowerCase().includes(query) ||
-      restaurant.menu.some((item) => item.name.toLowerCase().includes(query)))
-    .sort((a, b) => b.rating - a.rating)
-    .map(summarize);
-}
-
-export async function getMenu(restaurantId: string): Promise<{ restaurant: RestaurantSummary; menu: MenuItem[] } | undefined> {
-  const restaurant = byId.get(restaurantId);
-  return restaurant && { restaurant: summarize(restaurant), menu: restaurant.menu };
-}
-
-export async function placeOrder(params: {
-  userId: number;
-  restaurantId: string;
-  area: string;
-  lines: FoodOrderLine[];
-  delivery: FoodDelivery;
-}): Promise<FoodOrder> {
-  const restaurant = byId.get(params.restaurantId);
-  if (!restaurant) throw new Error("Restaurant not found");
-  if (!restaurant.areas.includes(params.area)) throw new Error(`${restaurant.name} doesn't deliver to ${params.area}`);
-
-  const lines = params.lines.map(({ itemId, quantity }) => {
-    const item = restaurant.menu.find((menuItem) => menuItem.id === itemId);
-    if (!item) throw new Error("An item in your cart is no longer available");
-    return { name: item.name, quantity, unitPrice: item.price, total: round(item.price * quantity) };
-  });
-  if (!lines.length) throw new Error("Your cart is empty");
-
-  const subtotal = round(lines.reduce((sum, line) => sum + line.total, 0));
-  if (subtotal < restaurant.minimumOrder) {
-    throw new Error(`The minimum order for ${restaurant.name} is ${CURRENCY} ${restaurant.minimumOrder}`);
-  }
-
-  const vat = round((subtotal + restaurant.deliveryFee + SERVICE_FEE) * VAT_RATE);
-
-  return {
-    orderId: `TEST-${crypto.randomUUID().slice(0, 8).toUpperCase()}`,
-    userId: params.userId,
-    restaurantId: restaurant.id,
-    restaurantName: restaurant.name,
-    area: params.area,
-    lines,
-    subtotal,
-    deliveryFee: restaurant.deliveryFee,
-    serviceFee: SERVICE_FEE,
-    vat,
-    total: round(subtotal + restaurant.deliveryFee + SERVICE_FEE + vat),
-    currency: CURRENCY,
-    delivery: params.delivery,
-    createdAt: Date.now(),
-    etaMinutes: restaurant.prepMinutes + 15,
-  };
-}
-
-export function orderStatus(order: FoodOrder, now = Date.now()) {
-  const elapsed = (now - order.createdAt) / 1000;
-  let current = STATUS_TIMELINE[0]!;
-  for (const step of STATUS_TIMELINE) {
-    if (elapsed >= step.afterSeconds) current = step;
-  }
-  return { status: current.status, label: current.label };
-}

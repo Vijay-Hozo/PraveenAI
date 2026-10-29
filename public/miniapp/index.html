@@ -62,7 +62,7 @@
 
     <!-- Food search form -->
     <section class="view" data-view="food-form" hidden>
-      <p class="notice">Test mode: fictional Dubai restaurants. Orders are simulated, nothing is delivered or charged.</p>
+      <p class="notice">Test mode: real Dubai restaurants from OpenStreetMap with dishes from TheMealDB. Prices are made up and orders are simulated, so nothing is delivered or charged.</p>
       <form id="food-form" class="card" autocomplete="off">
         <label>Deliver to<input name="area" placeholder="Area, e.g. Dubai Marina or JLT" required maxlength="100" list="food-areas"></label>
         <label>Craving <span class="hint">(optional)</span><input name="query" placeholder="Biryani, pizza, sushi…" maxlength="60"></label>
@@ -73,6 +73,7 @@
 
     <section class="view" data-view="food-results" hidden>
       <h2 id="food-results-title">Restaurants</h2>
+      <p class="notice" id="food-source-notice" hidden>OpenStreetMap is busy, so these are sample restaurants. Try again later for real places.</p>
       <div class="list" id="food-results"></div>
     </section>
 

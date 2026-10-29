@@ -17,7 +17,7 @@ import {
   type HotelPrebook,
 } from "../services/hotels/liteapi";
 import {
-  DUBAI_AREAS,
+  AREA_NAMES,
   STATUS_TIMELINE,
   getMenu,
   orderStatus,
@@ -25,7 +25,7 @@ import {
   resolveArea,
   searchRestaurants,
   type FoodOrder,
-} from "../services/food/mock";
+} from "../services/food";
 import { escapeHtml, formatFlightDateTime, nightsBetween } from "../utils/format";
 
 const publicDir = join(import.meta.dir, "..", "..", "public", "miniapp");
@@ -256,26 +256,27 @@ const api: Record<string, ApiHandler> = {
     return booking;
   },
 
-  "/api/food/areas": async () => ({ areas: DUBAI_AREAS }),
+  "/api/food/areas": async () => ({ areas: AREA_NAMES }),
 
   "/api/food/restaurants": async (body) => {
     const input = requireString(body.area, "area");
     const area = resolveArea(input);
-    if (!area) throw new HttpError(400, `We don't deliver to "${input}" yet. Try ${DUBAI_AREAS.slice(0, 3).join(", ")}…`);
+    if (!area) throw new HttpError(400, `We don't deliver to "${input}" yet. Try ${AREA_NAMES.slice(0, 3).join(", ")}…`);
     const query = typeof body.query === "string" ? body.query.slice(0, 60) : undefined;
-    return { area, restaurants: await searchRestaurants({ area, query }) };
+    return { area: area.name, ...await searchRestaurants({ area, query }) };
   },
 
   "/api/food/menu": async (body) => {
-    const result = await getMenu(requireString(body.restaurantId, "restaurantId", 20));
-    if (!result) throw new HttpError(404, "Restaurant not found");
+    const result = await getMenu(requireString(body.restaurantId, "restaurantId", 40))
+      .catch((error) => { throw upstreamError(error); });
+    if (!result) throw new HttpError(404, "This restaurant is no longer listed. Please search again.");
     return result;
   },
 
   "/api/food/order": async (body, auth, bot) => {
     const rawLines = Array.isArray(body.lines) ? body.lines.slice(0, 30) : [];
     const lines = rawLines.map((line: Record<string, unknown>) => ({
-      itemId: requireString(line?.itemId, "itemId", 20),
+      itemId: requireString(line?.itemId, "itemId", 80),
       quantity: requireCount(line?.quantity, "quantity", 20),
     }));
 
@@ -293,8 +294,8 @@ const api: Record<string, ApiHandler> = {
 
     const order = await placeOrder({
       userId: auth.user.id,
-      restaurantId: requireString(body.restaurantId, "restaurantId", 20),
-      area,
+      restaurantId: requireString(body.restaurantId, "restaurantId", 40),
+      area: area.name,
       lines,
       delivery,
     }).catch((error) => { throw new HttpError(400, error instanceof Error ? error.message : "Couldn't place the order"); });
@@ -365,6 +366,9 @@ async function handleApi(request: Request, handler: ApiHandler, bot: Bot, botTok
 export function startMiniAppServer(bot: Bot, botToken: string, port: number) {
   return Bun.serve({
     port,
+    // Bun closes connections idle for 10s by default, which cuts off slow
+    // upstream calls (flight offers, OpenStreetMap). Bun allows up to 255s.
+    idleTimeout: 120,
     async fetch(request) {
       const { pathname } = new URL(request.url);
 

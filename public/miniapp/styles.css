@@ -189,7 +189,15 @@ input:invalid.touched { color: var(--destructive); }
   border-bottom: 1px solid var(--separator);
 }
 .menu-item:last-child { border-bottom: 0; }
-.menu-item .info { min-width: 0; }
+.menu-item .thumb {
+  width: 56px;
+  height: 56px;
+  border-radius: 10px;
+  object-fit: cover;
+  flex-shrink: 0;
+  background: var(--bg);
+}
+.menu-item .info { min-width: 0; flex: 1; }
 .menu-item .item-price { margin-top: 2px; font-weight: 600; }
 .qty { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
 .qty output { min-width: 22px; text-align: center; font-weight: 600; }
