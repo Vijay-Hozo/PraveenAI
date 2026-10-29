@@ -434,6 +434,17 @@ function miniAppKeyboard(): InlineKeyboard | undefined {
     : undefined;
 }
 
+// A shared location (pin or live) opens the Food tab at that spot.
+bot.on("message:location", async (ctx) => {
+  if (!webAppUrl || ctx.chat.type !== "private") return;
+
+  const { latitude, longitude } = ctx.message.location;
+  const url = `${webAppUrl}/?tab=food&lat=${latitude.toFixed(5)}&lon=${longitude.toFixed(5)}`;
+  await ctx.reply("📍 Got your location. See restaurants that deliver there (test mode):", {
+    reply_markup: new InlineKeyboard().webApp("🍔 Restaurants near me", url),
+  });
+});
+
 bot.command("start", async (ctx) => {
   await ctx.reply(
     "Hello! I'm your travel agent.\n\n" +

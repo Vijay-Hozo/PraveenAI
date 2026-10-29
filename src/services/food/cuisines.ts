@@ -25,7 +25,7 @@ export const CUISINES: Cuisine[] = [
   },
   {
     key: "arabic", label: "Arabic", emoji: "🌯", mains: area("Turkish", "Syrian", "Saudi Arabia", "Egyptian"),
-    matches: ["arab", "arabic", "lebanese", "syrian", "middle_eastern", "emirati", "regional", "kebab", "shawarma", "turkish", "persian", "iranian", "egyptian", "oriental", "mandi", "falafel", "grill"],
+    matches: ["arab", "arabic", "lebanese", "syrian", "middle_eastern", "emirati", "kebab", "shawarma", "turkish", "persian", "iranian", "egyptian", "oriental", "mandi", "falafel", "grill"],
   },
   {
     key: "chinese", label: "Chinese", emoji: "🥡", mains: area("Chinese", "China"),
@@ -79,6 +79,21 @@ function normalize(value: string): string {
 
 export function cuisineByKey(key: string): Cuisine {
   return CUISINES.find((cuisine) => cuisine.key === key) ?? FALLBACK;
+}
+
+// Restaurants without a cuisine tag most likely serve the local food.
+const LOCAL_CUISINE: Record<string, string> = {
+  in: "indian", pk: "indian", bd: "indian", lk: "indian", np: "indian",
+  cn: "chinese", hk: "chinese", tw: "chinese", jp: "japanese",
+  th: "asian", vn: "asian", my: "asian", id: "asian", ph: "asian", kr: "asian",
+  it: "italian", mx: "mexican", us: "american",
+  sa: "arabic", eg: "arabic", jo: "arabic", lb: "arabic", tr: "arabic",
+  fr: "european", es: "european", gr: "european",
+};
+
+export function localCuisine(key: string, countryCode?: string): Cuisine {
+  const local = key === FALLBACK.key ? LOCAL_CUISINE[countryCode?.toLowerCase() ?? ""] : undefined;
+  return cuisineByKey(local ?? key);
 }
 
 export function cuisineFor(osmCuisine: string | undefined, amenity: string | undefined): Cuisine {

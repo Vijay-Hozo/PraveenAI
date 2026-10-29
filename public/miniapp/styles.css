@@ -177,6 +177,18 @@ input:invalid.touched { color: var(--destructive); }
 .summary .warn { color: var(--destructive); font-size: 13px; }
 
 /* Food ordering */
+.location-button {
+  display: block;
+  width: 100%;
+  margin-top: 10px;
+  padding: 12px;
+  border: 0;
+  border-radius: var(--radius);
+  background: var(--card);
+  color: var(--link);
+  font: inherit;
+  font-weight: 600;
+}
 .menu-meta { margin: -6px 4px 12px; }
 .menu-group { margin-bottom: 12px; }
 .menu-category { font-weight: 700; padding: 10px 0 2px; }

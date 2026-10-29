@@ -1,46 +1,50 @@
-// Real restaurants, cafés and fast-food places from OpenStreetMap through the
-// public Overpass API. Free and keyless, but slow (often 10-20s) and
-// sometimes overloaded, so results are cached per area, several servers are
-// tried in turn, and osm-snapshot.json (scripts/update-food-snapshot.ts)
-// covers the time Overpass is busy.
+// Real restaurants, cafés and fast-food places around any point, from
+// OpenStreetMap through the public Overpass API. Free and keyless, but slow
+// (often 10-20s) and sometimes overloaded, so:
+// - results are cached for ~1 km grid cells and several servers are tried,
+// - osm-snapshot.json (scripts/update-food-snapshot.ts) answers instantly
+//   near saved spots while live data loads in the background,
+// - after a failure the same cell isn't retried for a few minutes.
 
 import { cuisineFor } from "./cuisines";
 import savedSnapshot from "./osm-snapshot.json";
-import { pick, type Restaurant } from "./types";
+import { distanceKm, type Place } from "./types";
 
 const OVERPASS_ENDPOINTS = [
   "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
   "https://overpass-api.de/api/interpreter",
 ];
-const RADIUS_METERS = 1200;
-const MAX_RESULTS = 40;
+// Small towns have few places close by, so a thin result widens the search.
+const RADII_METERS = [2000, 6000, 15000];
+const ENOUGH_PLACES = 10;
+const MAX_PLACES = 40;
 const CACHE_MS = 12 * 60 * 60 * 1000;
+const RETRY_AFTER_MS = 5 * 60 * 1000;
+// A saved spot covers searches within this distance of it.
+const SNAPSHOT_REACH_KM = 3;
+
+type Point = { lat: number; lon: number };
 
 type OverpassElement = {
   type: "node" | "way" | "relation";
   id: number;
   lat?: number;
   lon?: number;
-  center?: { lat: number; lon: number };
+  center?: Point;
   tags?: Record<string, string>;
 };
 
-// After a failed request, skip Overpass for this long instead of making every
-// search wait for another timeout.
-const RETRY_AFTER_MS = 5 * 60 * 1000;
+export type SnapshotSpot = Point & { name: string; radiusKm: number; places: Place[] };
 
-const cache = new Map<string, { at: number; restaurants: Restaurant[] }>();
-const pending = new Map<string, Promise<Restaurant[]>>();
+export type NearbyPlaces = {
+  places: (Place & { distanceKm: number })[];
+  radiusKm: number;
+};
+
+const snapshot = (savedSnapshot as unknown as { spots?: SnapshotSpot[] }).spots ?? [];
+const cache = new Map<string, { at: number; result: { center: Point; radiusKm: number; places: Place[] } }>();
+const pending = new Map<string, Promise<{ center: Point; radiusKm: number; places: Place[] }>>();
 const failedAt = new Map<string, number>();
-const snapshot = savedSnapshot as unknown as { areas: Record<string, Restaurant[]> };
-
-function distanceKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
-  const rad = Math.PI / 180;
-  const a =
-    Math.sin(((lat2 - lat1) * rad) / 2) ** 2 +
-    Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin(((lon2 - lon1) * rad) / 2) ** 2;
-  return 6371 * 2 * Math.asin(Math.sqrt(a));
-}
 
 async function overpass(query: string): Promise<OverpassElement[]> {
   let lastError: unknown;
@@ -61,98 +65,120 @@ async function overpass(query: string): Promise<OverpassElement[]> {
       return data.elements ?? [];
     } catch (error) {
       lastError = error;
-      console.warn("Overpass request failed:", error instanceof Error ? error.message : error);
+      console.warn(`Overpass ${new URL(endpoint).host} failed:`, error instanceof Error ? error.message : error);
     }
   }
 
   throw lastError instanceof Error ? lastError : new Error("OpenStreetMap is unavailable");
 }
 
-function toRestaurant(element: OverpassElement, area: string, center: { lat: number; lon: number }): Restaurant | undefined {
+function toPlace(element: OverpassElement): Place | undefined {
   const tags = element.tags ?? {};
   const name = (tags["name:en"] || tags.name)?.trim();
   const lat = element.lat ?? element.center?.lat;
   const lon = element.lon ?? element.center?.lon;
   if (!name || lat === undefined || lon === undefined) return undefined;
 
-  const id = `osm-${element.type[0]}${element.id}`;
-  const cuisine = cuisineFor(tags.cuisine, tags.amenity);
   const address = [tags["addr:housenumber"], tags["addr:street"]].filter(Boolean).join(" ") ||
     tags["addr:place"] || undefined;
 
   return {
-    id,
+    id: `osm-${element.type[0]}${element.id}`,
     name,
-    cuisine: cuisine.label,
-    emoji: cuisine.emoji,
-    distanceKm: Math.round(distanceKm(center.lat, center.lon, lat, lon) * 10) / 10,
+    cuisineKey: cuisineFor(tags.cuisine, tags.amenity).key,
+    lat,
+    lon,
     address,
     openingHours: tags.opening_hours,
-    // OpenStreetMap has no delivery data, so these are generated per place.
-    prepMinutes: pick(`${id}:prep`, [10, 15, 20, 25]),
-    deliveryFee: pick(`${id}:fee`, [0, 3, 5, 7, 9]),
-    minimumOrder: cuisine.key === "cafe" ? pick(`${id}:min`, [15, 20, 25]) : pick(`${id}:min`, [25, 30, 40, 50]),
-    areas: [area],
-    source: "openstreetmap",
   };
 }
 
-export async function fetchRestaurants(area: string, center: { lat: number; lon: number }): Promise<Restaurant[]> {
-  const query =
+async function placesWithin(center: Point, radiusMeters: number): Promise<Place[]> {
+  const elements = await overpass(
     `[out:json][timeout:25];` +
-    `nwr["amenity"~"^(restaurant|fast_food|cafe)$"]["name"](around:${RADIUS_METERS},${center.lat},${center.lon});` +
-    `out center tags 300;`;
-  const elements = await overpass(query);
+    `nwr["amenity"~"^(restaurant|fast_food|cafe)$"]["name"](around:${radiusMeters},${center.lat},${center.lon});` +
+    `out center tags 400;`,
+  );
 
   // Chains appear many times; keep the closest branch of each name.
-  const byName = new Map<string, Restaurant>();
+  const byName = new Map<string, Place>();
   for (const element of elements) {
-    const restaurant = toRestaurant(element, area, center);
-    if (!restaurant) continue;
-    const key = restaurant.name.toLowerCase();
+    const place = toPlace(element);
+    if (!place) continue;
+    const key = place.name.toLowerCase();
     const existing = byName.get(key);
-    if (!existing || (restaurant.distanceKm ?? 0) < (existing.distanceKm ?? 0)) byName.set(key, restaurant);
+    if (!existing || distanceKm(center, place) < distanceKm(center, existing)) byName.set(key, place);
   }
-
-  return [...byName.values()]
-    .sort((a, b) => (a.distanceKm ?? 0) - (b.distanceKm ?? 0))
-    .slice(0, MAX_RESULTS);
+  return [...byName.values()];
 }
 
-function refresh(area: string, center: { lat: number; lon: number }): Promise<Restaurant[]> {
-  // Concurrent searches for the same area share one Overpass request.
-  let request = pending.get(area);
+// Searches the smallest radius that finds enough places.
+export async function fetchPlaces(center: Point): Promise<{ center: Point; radiusKm: number; places: Place[] }> {
+  let places: Place[] = [];
+  let radius = RADII_METERS[0]!;
+  for (radius of RADII_METERS) {
+    places = await placesWithin(center, radius);
+    if (places.length >= ENOUGH_PLACES) break;
+  }
+  return { center, radiusKm: radius / 1000, places };
+}
+
+function cellKey(point: Point): string {
+  return `${point.lat.toFixed(2)},${point.lon.toFixed(2)}`;
+}
+
+function refresh(key: string, point: Point) {
+  let request = pending.get(key);
   if (!request) {
-    request = fetchRestaurants(area, center)
-      .then((restaurants) => {
-        if (restaurants.length) cache.set(area, { at: Date.now(), restaurants });
-        return restaurants;
+    request = fetchPlaces(point)
+      .then((result) => {
+        cache.set(key, { at: Date.now(), result });
+        return result;
       })
       .catch((error) => {
-        failedAt.set(area, Date.now());
+        failedAt.set(key, Date.now());
         throw error;
       })
-      .finally(() => pending.delete(area));
-    pending.set(area, request);
+      .finally(() => pending.delete(key));
+    pending.set(key, request);
   }
   return request;
 }
 
-// Live data when cached; otherwise the saved snapshot right away while live
-// data loads in the background for the next search. Areas without a snapshot
-// wait for Overpass.
-export async function restaurantsNear(area: string, center: { lat: number; lon: number }): Promise<Restaurant[]> {
-  const cached = cache.get(area);
-  if (cached && Date.now() - cached.at < CACHE_MS) return cached.restaurants;
+function nearestSpot(point: Point, reachKm: number): SnapshotSpot | undefined {
+  return snapshot
+    .map((spot) => ({ spot, distance: distanceKm(point, spot) }))
+    .filter(({ distance }) => distance <= reachKm)
+    .sort((a, b) => a.distance - b.distance)[0]?.spot;
+}
 
-  const recentlyFailed = Date.now() - (failedAt.get(area) ?? 0) < RETRY_AFTER_MS;
-  const saved = snapshot.areas[area];
+function nearest(point: Point, places: Place[], radiusKm: number): NearbyPlaces {
+  return {
+    radiusKm,
+    places: places
+      .map((place) => ({ ...place, distanceKm: Math.round(distanceKm(point, place) * 10) / 10 }))
+      .sort((a, b) => a.distanceKm - b.distanceKm)
+      .slice(0, MAX_PLACES),
+  };
+}
 
-  if (saved?.length) {
-    if (!recentlyFailed) refresh(area, center).catch((error) => console.warn(`OpenStreetMap refresh for ${area} failed:`, error.message));
-    return cached?.restaurants ?? saved;
+export async function placesNear(point: Point): Promise<NearbyPlaces> {
+  const key = cellKey(point);
+  const cached = cache.get(key);
+  if (cached && Date.now() - cached.at < CACHE_MS) return nearest(point, cached.result.places, cached.result.radiusKm);
+
+  const recentlyFailed = Date.now() - (failedAt.get(key) ?? 0) < RETRY_AFTER_MS;
+  const spot = nearestSpot(point, SNAPSHOT_REACH_KM);
+
+  // Saved data now, fresh data for the next search.
+  if (spot) {
+    if (!recentlyFailed) refresh(key, point).catch((error) => console.warn(`OpenStreetMap refresh failed: ${error.message}`));
+    const source = cached?.result ?? spot;
+    return nearest(point, source.places, source.radiusKm);
   }
-  if (cached) return cached.restaurants;
+  if (cached) return nearest(point, cached.result.places, cached.result.radiusKm);
   if (recentlyFailed) throw new Error("OpenStreetMap is busy, try again in a few minutes");
-  return refresh(area, center);
+
+  const result = await refresh(key, point);
+  return nearest(point, result.places, result.radiusKm);
 }

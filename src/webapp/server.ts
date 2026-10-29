@@ -17,13 +17,14 @@ import {
   type HotelPrebook,
 } from "../services/hotels/liteapi";
 import {
-  AREA_NAMES,
+  FoodLocationError,
   STATUS_TIMELINE,
   getMenu,
   orderStatus,
   placeOrder,
-  resolveArea,
+  resolveLocation,
   searchRestaurants,
+  type FoodLocation,
   type FoodOrder,
 } from "../services/food";
 import { escapeHtml, formatFlightDateTime, nightsBetween } from "../utils/format";
@@ -41,6 +42,7 @@ const flightOffers = new Map<string, FlightOffer>();
 const hotelOffers = new Map<string, HotelOffer>();
 const prebooks = new Map<string, { userId: number; offer: HotelOffer; prebook: HotelPrebook }>();
 const foodOrders = new Map<string, FoodOrder>();
+const foodLocations = new Map<number, FoodLocation>();
 
 class HttpError extends Error {
   constructor(readonly status: number, message: string) {
@@ -115,7 +117,7 @@ function foodOrderHtml(order: FoodOrder): string {
   return [
     `<b>🍽 ${escapeHtml(order.restaurantName)}</b>`,
     ...order.lines.map((line) => `${line.quantity} × ${escapeHtml(line.name)} · ${order.currency} ${line.total.toFixed(2)}`),
-    `Delivery to ${escapeHtml(order.delivery.address)}, ${escapeHtml(order.area)}`,
+    `Delivery to ${escapeHtml(order.delivery.address)}, ${escapeHtml(order.location.label)}`,
     `<b>Total ${order.currency} ${order.total.toFixed(2)}</b> (cash on delivery)`,
   ].join("\n");
 }
@@ -256,14 +258,18 @@ const api: Record<string, ApiHandler> = {
     return booking;
   },
 
-  "/api/food/areas": async () => ({ areas: AREA_NAMES }),
+  // Takes a typed place ({ place }) or a live location ({ lat, lon }).
+  "/api/food/restaurants": async (body, auth) => {
+    const place = typeof body.place === "string" ? body.place.slice(0, 120) : undefined;
+    const location = await resolveLocation({ place, lat: body.lat, lon: body.lon }).catch((error) => {
+      if (error instanceof FoodLocationError) throw new HttpError(400, error.message);
+      throw upstreamError(error);
+    });
+    // Orders are delivered to the user's latest searched location.
+    foodLocations.set(auth.user.id, location);
 
-  "/api/food/restaurants": async (body) => {
-    const input = requireString(body.area, "area");
-    const area = resolveArea(input);
-    if (!area) throw new HttpError(400, `We don't deliver to "${input}" yet. Try ${AREA_NAMES.slice(0, 3).join(", ")}…`);
     const query = typeof body.query === "string" ? body.query.slice(0, 60) : undefined;
-    return { area: area.name, ...await searchRestaurants({ area, query }) };
+    return { location, ...await searchRestaurants(location, query) };
   },
 
   "/api/food/menu": async (body) => {
@@ -289,13 +295,13 @@ const api: Record<string, ApiHandler> = {
     };
     if (!/^\+?[\d\s-]{7,20}$/.test(delivery.phone)) throw new HttpError(400, "Enter a valid phone number");
 
-    const area = resolveArea(requireString(body.area, "area"));
-    if (!area) throw new HttpError(400, "Unknown delivery area");
+    const location = foodLocations.get(auth.user.id);
+    if (!location) throw new HttpError(400, "Your delivery location has expired. Please search again.");
 
     const order = await placeOrder({
       userId: auth.user.id,
       restaurantId: requireString(body.restaurantId, "restaurantId", 40),
-      area: area.name,
+      location,
       lines,
       delivery,
     }).catch((error) => { throw new HttpError(400, error instanceof Error ? error.message : "Couldn't place the order"); });

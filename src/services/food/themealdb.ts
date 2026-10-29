@@ -1,5 +1,6 @@
 // Dish names and photos from TheMealDB (free test key "1"). It has no
-// prices, so prices are generated per dish.
+// prices, so prices are generated per dish on the AED scale and converted to
+// the local currency by the caller.
 
 import type { Cuisine, MealSource } from "./cuisines";
 import { hash, type MenuItem } from "./types";
@@ -54,25 +55,32 @@ function slice(meals: Meal[], seed: string, count: number): Meal[] {
   return Array.from({ length: count }, (_, index) => meals[(start + index) % meals.length]!);
 }
 
-function toItem(meal: Meal, restaurantId: string, category: string, range: [number, number], veg?: boolean): MenuItem {
+export type MenuOptions = {
+  // Leave out pork and alcohol (halal-only regions).
+  halal: boolean;
+  // Converts an AED-scale price to the local currency.
+  price: (aedAmount: number) => number;
+};
+
+function toItem(meal: Meal, restaurantId: string, category: string, range: [number, number], options: MenuOptions, veg?: boolean): MenuItem {
   const [min, max] = range;
   return {
     id: `${restaurantId}:${meal.idMeal}`,
     name: meal.strMeal.trim(),
     description: "",
-    price: min + (hash(`${restaurantId}:${meal.idMeal}`) % (max - min + 1)),
+    price: options.price(min + (hash(`${restaurantId}:${meal.idMeal}`) % (max - min + 1))),
     category,
     veg,
     image: meal.strMealThumb ? `${meal.strMealThumb}/preview` : undefined,
   };
 }
 
-// Dubai restaurants don't serve pork or alcohol, so leave those dishes out.
-const NOT_SERVED = /\b(pork|bacon|ham|prosciutto|pancetta|chorizo|salami|pepperoni|carbonara|lard|wine|vin|beer|rum|brandy|whisky|whiskey|vodka|sake)\b/i;
+// Left out in halal-only regions such as the UAE.
+const NOT_HALAL = /\b(pork|bacon|ham|prosciutto|pancetta|chorizo|salami|pepperoni|carbonara|lard|wine|vin|beer|rum|brandy|whisky|whiskey|vodka|sake)\b/i;
 // Sweet dishes TheMealDB doesn't tag as Dessert.
 const SWEET = /\b(cakes?|cupcakes?|tarts?|fudge|puddings?|cookies?|brownies?|cheesecake|mousse)\b/i;
 
-export async function menuFor(restaurantId: string, cuisine: Cuisine): Promise<MenuItem[]> {
+export async function menuFor(restaurantId: string, cuisine: Cuisine, options: MenuOptions): Promise<MenuItem[]> {
   const isCafe = cuisine.key === "cafe";
 
   const [cuisineMeals, desserts] = await Promise.all([
@@ -80,7 +88,7 @@ export async function menuFor(restaurantId: string, cuisine: Cuisine): Promise<M
     mealsFrom({ kind: "category", values: ["Dessert"] }).catch(() => []),
   ]);
   const dessertIds = new Set(desserts.map((meal) => meal.idMeal));
-  const served = (meal: Meal) => !NOT_SERVED.test(meal.strMeal);
+  const served = (meal: Meal) => !options.halal || !NOT_HALAL.test(meal.strMeal);
 
   // Area filters return a cuisine's desserts too; list those under Desserts.
   let mains = cuisineMeals.filter((meal) => served(meal) && !dessertIds.has(meal.idMeal) && !SWEET.test(meal.strMeal));
@@ -93,8 +101,8 @@ export async function menuFor(restaurantId: string, cuisine: Cuisine): Promise<M
 
   return [
     ...slice(mains, `${restaurantId}:mains`, isCafe ? 5 : 8)
-      .map((meal) => toItem(meal, restaurantId, isCafe ? "Breakfast & brunch" : "Mains", isCafe ? [22, 48] : [28, 75], cuisine.veg)),
+      .map((meal) => toItem(meal, restaurantId, isCafe ? "Breakfast & brunch" : "Mains", isCafe ? [22, 48] : [28, 75], options, cuisine.veg)),
     ...slice(sweets, `${restaurantId}:desserts`, isCafe ? 4 : 2)
-      .map((meal) => toItem(meal, restaurantId, "Desserts", [16, 36])),
+      .map((meal) => toItem(meal, restaurantId, "Desserts", [16, 36], options)),
   ];
 }

@@ -62,12 +62,13 @@
 
     <!-- Food search form -->
     <section class="view" data-view="food-form" hidden>
-      <p class="notice">Test mode: real Dubai restaurants from OpenStreetMap with dishes from TheMealDB. Prices are made up and orders are simulated, so nothing is delivered or charged.</p>
+      <p class="notice">Test mode: real restaurants near you from OpenStreetMap with dishes from TheMealDB. Prices are made up and orders are simulated, so nothing is delivered or charged.</p>
       <form id="food-form" class="card" autocomplete="off">
-        <label>Deliver to<input name="area" placeholder="Area, e.g. Dubai Marina or JLT" required maxlength="100" list="food-areas"></label>
+        <label>Deliver to<input name="place" placeholder="Area or city, e.g. T. Nagar, Chennai" required maxlength="120"></label>
         <label>Craving <span class="hint">(optional)</span><input name="query" placeholder="Biryani, pizza, sushi…" maxlength="60"></label>
       </form>
-      <datalist id="food-areas"></datalist>
+      <button type="button" class="location-button" id="use-location">📍 Use my current location</button>
+      <div class="chips" id="recent-food"></div>
       <div class="chips" id="food-cuisines"></div>
     </section>
 

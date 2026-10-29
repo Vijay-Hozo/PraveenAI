@@ -1,15 +1,20 @@
-// Fictional restaurants used when OpenStreetMap is unavailable or has no
-// places for an area, so the Food tab always has something to order from.
+// Fictional restaurants shown when OpenStreetMap can't be reached, so the
+// Food tab always has something to order from. Prices are on the AED scale
+// and converted to the local currency when shown.
 
-import { DUBAI_AREAS } from "./areas";
-import type { MenuItem, Restaurant } from "./types";
+import type { MenuItem } from "./types";
 
-type SampleRestaurant = Omit<Restaurant, "source"> & { menu: MenuItem[] };
-
-const ALL = DUBAI_AREAS.map((area) => area.name);
-const WEST = ["Dubai Marina", "JBR", "JLT", "Al Barsha"];
-const CENTRAL = ["Downtown Dubai", "Business Bay", "DIFC", "Jumeirah"];
-const OLD_DUBAI = ["Deira", "Bur Dubai", "Downtown Dubai"];
+export type SampleRestaurant = {
+  id: string;
+  name: string;
+  cuisineKey: string;
+  emoji: string;
+  rating: number;
+  prepMinutes: number;
+  deliveryFee: number;
+  minimumOrder: number;
+  menu: MenuItem[];
+};
 
 function items(prefix: string, list: Omit<MenuItem, "id">[]): MenuItem[] {
   return list.map((item, index) => ({ id: `${prefix}-${index + 1}`, ...item }));
@@ -17,8 +22,8 @@ function items(prefix: string, list: Omit<MenuItem, "id">[]): MenuItem[] {
 
 export const sampleRestaurants: SampleRestaurant[] = [
   {
-    id: "r1", name: "Saffron Lane", cuisine: "Indian", emoji: "🍛", rating: 4.6,
-    prepMinutes: 20, deliveryFee: 5, minimumOrder: 30, areas: ALL,
+    id: "r1", name: "Saffron Lane", cuisineKey: "indian", emoji: "🍛", rating: 4.6,
+    prepMinutes: 20, deliveryFee: 5, minimumOrder: 30,
     menu: items("r1", [
       { name: "Butter Chicken", description: "Tandoori chicken in a creamy tomato gravy", price: 42, category: "Mains" },
       { name: "Paneer Tikka Masala", description: "Chargrilled paneer, onion and pepper masala", price: 38, category: "Mains", veg: true },
@@ -29,8 +34,8 @@ export const sampleRestaurants: SampleRestaurant[] = [
     ]),
   },
   {
-    id: "r2", name: "Shawarma Corner", cuisine: "Arabic", emoji: "🌯", rating: 4.5,
-    prepMinutes: 10, deliveryFee: 0, minimumOrder: 20, areas: ALL,
+    id: "r2", name: "Shawarma Corner", cuisineKey: "arabic", emoji: "🌯", rating: 4.5,
+    prepMinutes: 10, deliveryFee: 0, minimumOrder: 20,
     menu: items("r2", [
       { name: "Chicken Shawarma", description: "Garlic toum, pickles, fries inside", price: 12, category: "Shawarma" },
       { name: "Beef Shawarma", description: "Tahini, onion, parsley", price: 14, category: "Shawarma" },
@@ -41,8 +46,8 @@ export const sampleRestaurants: SampleRestaurant[] = [
     ]),
   },
   {
-    id: "r3", name: "Marina Burger Co.", cuisine: "Burgers", emoji: "🍔", rating: 4.4,
-    prepMinutes: 15, deliveryFee: 7, minimumOrder: 35, areas: WEST,
+    id: "r3", name: "Smash Burger Co.", cuisineKey: "american", emoji: "🍔", rating: 4.4,
+    prepMinutes: 15, deliveryFee: 7, minimumOrder: 35,
     menu: items("r3", [
       { name: "Classic Smash Burger", description: "Double beef, cheddar, house sauce", price: 39, category: "Burgers" },
       { name: "Crispy Chicken Burger", description: "Buttermilk chicken, slaw, pickles", price: 36, category: "Burgers" },
@@ -53,8 +58,8 @@ export const sampleRestaurants: SampleRestaurant[] = [
     ]),
   },
   {
-    id: "r4", name: "Tokyo Table", cuisine: "Japanese", emoji: "🍣", rating: 4.7,
-    prepMinutes: 25, deliveryFee: 10, minimumOrder: 60, areas: CENTRAL,
+    id: "r4", name: "Tokyo Table", cuisineKey: "japanese", emoji: "🍣", rating: 4.7,
+    prepMinutes: 25, deliveryFee: 10, minimumOrder: 60,
     menu: items("r4", [
       { name: "Salmon Nigiri (4 pcs)", description: "", price: 34, category: "Sushi" },
       { name: "Dragon Roll", description: "Prawn tempura, avocado, eel sauce", price: 52, category: "Sushi" },
@@ -65,8 +70,8 @@ export const sampleRestaurants: SampleRestaurant[] = [
     ]),
   },
   {
-    id: "r5", name: "Forno Napoli", cuisine: "Italian", emoji: "🍕", rating: 4.5,
-    prepMinutes: 18, deliveryFee: 6, minimumOrder: 40, areas: [...WEST, ...CENTRAL],
+    id: "r5", name: "Forno Napoli", cuisineKey: "italian", emoji: "🍕", rating: 4.5,
+    prepMinutes: 18, deliveryFee: 6, minimumOrder: 40,
     menu: items("r5", [
       { name: "Margherita Pizza", description: "San Marzano tomato, fior di latte, basil", price: 45, category: "Pizza", veg: true },
       { name: "Diavola Pizza", description: "Spicy beef pepperoni, chilli oil", price: 55, category: "Pizza" },
@@ -77,8 +82,8 @@ export const sampleRestaurants: SampleRestaurant[] = [
     ]),
   },
   {
-    id: "r6", name: "Kerala Kitchen", cuisine: "South Indian", emoji: "🥥", rating: 4.6,
-    prepMinutes: 20, deliveryFee: 4, minimumOrder: 25, areas: [...OLD_DUBAI, "Al Barsha", "JLT"],
+    id: "r6", name: "Kerala Kitchen", cuisineKey: "indian", emoji: "🥥", rating: 4.6,
+    prepMinutes: 20, deliveryFee: 4, minimumOrder: 25,
     menu: items("r6", [
       { name: "Masala Dosa", description: "With sambar and chutneys", price: 16, category: "Breakfast", veg: true },
       { name: "Kerala Parotta (2 pcs)", description: "", price: 8, category: "Breads", veg: true },
@@ -89,8 +94,8 @@ export const sampleRestaurants: SampleRestaurant[] = [
     ]),
   },
   {
-    id: "r7", name: "Green Bowl", cuisine: "Healthy", emoji: "🥗", rating: 4.3,
-    prepMinutes: 12, deliveryFee: 5, minimumOrder: 30, areas: ALL,
+    id: "r7", name: "Green Bowl", cuisineKey: "healthy", emoji: "🥗", rating: 4.3,
+    prepMinutes: 12, deliveryFee: 5, minimumOrder: 30,
     menu: items("r7", [
       { name: "Grilled Chicken Quinoa Bowl", description: "Avocado, edamame, sesame dressing", price: 46, category: "Bowls" },
       { name: "Falafel Buddha Bowl", description: "Hummus, greens, pickled onion", price: 39, category: "Bowls", veg: true },
@@ -101,8 +106,8 @@ export const sampleRestaurants: SampleRestaurant[] = [
     ]),
   },
   {
-    id: "r8", name: "Al Fanar Grill", cuisine: "Emirati", emoji: "🍢", rating: 4.5,
-    prepMinutes: 25, deliveryFee: 8, minimumOrder: 50, areas: [...OLD_DUBAI, "Jumeirah", "DIFC"],
+    id: "r8", name: "Al Fanar Grill", cuisineKey: "arabic", emoji: "🍢", rating: 4.5,
+    prepMinutes: 25, deliveryFee: 8, minimumOrder: 50,
     menu: items("r8", [
       { name: "Chicken Machboos", description: "Spiced rice with loomi", price: 52, category: "Mains" },
       { name: "Lamb Harees", description: "Slow-cooked wheat and lamb", price: 48, category: "Mains" },
@@ -112,8 +117,8 @@ export const sampleRestaurants: SampleRestaurant[] = [
     ]),
   },
   {
-    id: "r9", name: "Wok Street", cuisine: "Chinese", emoji: "🥡", rating: 4.2,
-    prepMinutes: 15, deliveryFee: 5, minimumOrder: 30, areas: ALL,
+    id: "r9", name: "Wok Street", cuisineKey: "chinese", emoji: "🥡", rating: 4.2,
+    prepMinutes: 15, deliveryFee: 5, minimumOrder: 30,
     menu: items("r9", [
       { name: "Kung Pao Chicken", description: "", price: 38, category: "Mains" },
       { name: "Beef in Black Bean Sauce", description: "", price: 42, category: "Mains" },
@@ -124,8 +129,8 @@ export const sampleRestaurants: SampleRestaurant[] = [
     ]),
   },
   {
-    id: "r10", name: "Bean & Bake", cuisine: "Café", emoji: "☕", rating: 4.4,
-    prepMinutes: 8, deliveryFee: 3, minimumOrder: 20, areas: [...WEST, ...CENTRAL],
+    id: "r10", name: "Bean & Bake", cuisineKey: "cafe", emoji: "☕", rating: 4.4,
+    prepMinutes: 8, deliveryFee: 3, minimumOrder: 20,
     menu: items("r10", [
       { name: "Flat White", description: "", price: 19, category: "Coffee", veg: true },
       { name: "Spanish Latte", description: "", price: 22, category: "Coffee", veg: true },

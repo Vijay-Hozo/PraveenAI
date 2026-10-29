@@ -22,7 +22,7 @@
     hotels: [],
     selectedHotel: null,
     prebook: null,
-    food: { area: "", restaurants: [], restaurant: null, menu: [], cart: new Map(), order: null, poll: null },
+    food: { location: null, pricing: null, restaurants: [], restaurant: null, menu: [], cart: new Map(), order: null, poll: null },
   };
 
   // ---------- Telegram helpers ----------
@@ -151,7 +151,7 @@
     } catch (error) {
       haptic.notify("error");
       onError?.();
-      await showAlert(error.message || "Something went wrong.");
+      if (!error.silent) await showAlert(error.message || "Something went wrong.");
     } finally {
       state.busy = false;
       setMainProgress(false);
@@ -579,17 +579,29 @@
 
   // ---------- Food ordering (test) ----------
 
-  // Mirrors the server's fees so the cart shows the total before ordering.
-  const SERVICE_FEE = 2;
-  const VAT_RATE = 0.05;
   const CUISINES = ["Biryani", "Shawarma", "Pizza", "Sushi", "Burgers", "Healthy", "Coffee"];
 
-  function money(amount) {
-    return `AED ${amount.toFixed(2)}`;
+  // Prices come in the delivery location's currency (₹190, AED 42, $15).
+  function money(amount, currency = state.food.pricing?.currency ?? "USD") {
+    try {
+      return new Intl.NumberFormat("en", {
+        style: "currency",
+        currency,
+        minimumFractionDigits: Number.isInteger(amount) ? 0 : 2,
+        maximumFractionDigits: 2,
+      }).format(amount);
+    } catch {
+      return `${currency} ${amount.toFixed(2)}`;
+    }
+  }
+
+  function formatDistance(km) {
+    return km < 0.1 ? "<100 m" : `${km} km`;
   }
 
   function cartTotals() {
     const { restaurant, menu, cart } = state.food;
+    const pricing = restaurant?.pricing ?? { serviceFee: 0, taxRate: 0, taxLabel: "Tax" };
     let count = 0;
     let subtotal = 0;
     for (const [itemId, quantity] of cart) {
@@ -599,52 +611,137 @@
       subtotal += item.price * quantity;
     }
     const deliveryFee = restaurant?.deliveryFee ?? 0;
-    const vat = Math.round((subtotal + deliveryFee + SERVICE_FEE) * VAT_RATE * 100) / 100;
-    return { count, subtotal, deliveryFee, vat, total: subtotal + deliveryFee + SERVICE_FEE + vat };
+    const tax = Math.round((subtotal + deliveryFee + pricing.serviceFee) * pricing.taxRate * 100) / 100;
+    return { count, subtotal, deliveryFee, tax, pricing, total: subtotal + deliveryFee + pricing.serviceFee + tax };
   }
 
-  async function submitFoodSearch() {
+  // Live location through Telegram's LocationManager (Bot API 8.0), falling
+  // back to the browser's geolocation on older clients.
+  function getLiveLocation() {
+    return new Promise((resolve, reject) => {
+      const fromBrowser = () => {
+        if (!navigator.geolocation) {
+          reject(new Error("Location isn't available on this device. Type a place instead."));
+          return;
+        }
+        navigator.geolocation.getCurrentPosition(
+          (position) => resolve({ lat: position.coords.latitude, lon: position.coords.longitude }),
+          (error) => reject(new Error(error.code === 1
+            ? "Location access was denied. Allow it for Telegram or type a place instead."
+            : "Couldn't get your location. Type a place instead.")),
+          { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 },
+        );
+      };
+
+      if (!supports("8.0")) {
+        fromBrowser();
+        return;
+      }
+
+      const manager = tg.LocationManager;
+      const request = () => {
+        if (!manager.isLocationAvailable) {
+          fromBrowser();
+          return;
+        }
+        manager.getLocation((data) => {
+          if (data) {
+            resolve({ lat: data.latitude, lon: data.longitude });
+            return;
+          }
+          // Denied earlier: Telegram won't ask again, only its settings can re-enable it.
+          if (manager.isAccessRequested && !manager.isAccessGranted) {
+            const error = new Error("location denied");
+            error.silent = true;
+            showConfirm("Location access is off for this app. Open settings to allow it?").then((open) => {
+              if (open) manager.openSettings();
+            });
+            reject(error);
+            return;
+          }
+          reject(new Error("Couldn't get your location. Type a place instead."));
+        });
+      };
+
+      if (manager.isInited) request();
+      else manager.init(request);
+    });
+  }
+
+  // target is { place } for a typed location or { lat, lon } for a live one.
+  async function searchFood(target, query) {
+    state.food.restaurants = [];
+    $("#food-results").replaceChildren();
+    $("#food-results-title").textContent = target.label ?? target.place ?? "Near you";
+    $("#food-source-notice").hidden = true;
+    show("food-results");
+    // OpenStreetMap can take 10-30s for a place nobody searched recently.
+    setLoading(true, "Finding restaurants nearby…");
+
+    const result = await api("/api/food/restaurants", { place: target.place, lat: target.lat, lon: target.lon, query });
+    const { location } = result;
+    state.food.location = location;
+    state.food.pricing = result.pricing;
+    state.food.restaurants = result.restaurants;
+    $("#food-form").place.value = location.label;
+    await saveRecent("recent_food_locations", { label: location.label, lat: location.lat, lon: location.lon },
+      (item) => item.label.toLowerCase());
+
+    $("#food-results-title").textContent = query ? `${query} near ${location.label}` : `Near ${location.label}`;
+    const notice = $("#food-source-notice");
+    if (result.source === "sample") {
+      notice.textContent = "OpenStreetMap is busy, so these are sample restaurants. Try again in a few minutes for real places nearby.";
+      notice.hidden = false;
+    } else if (result.source === "mixed") {
+      notice.textContent = "OpenStreetMap lists only a few places here, so sample restaurants (with ⭐ ratings) are added below them.";
+      notice.hidden = false;
+    } else if (result.radiusKm > 2 && result.restaurants.length) {
+      notice.textContent = `Few places close by, so this includes restaurants up to ${result.radiusKm} km away.`;
+      notice.hidden = false;
+    }
+    renderRestaurants();
+    haptic.notify(result.restaurants.length ? "success" : "warning");
+  }
+
+  function submitFoodSearch() {
     const data = readForm($("#food-form"));
     if (!data) return;
+    run(() => searchFood({ place: data.place }, data.query || undefined), () => show("food-form"));
+  }
 
+  function searchAtLiveLocation() {
+    if (!canUseApi) {
+      showAlert("Open the app from the bot's menu button to order food.");
+      return;
+    }
+    const query = $("#food-form").query.value.trim() || undefined;
     run(async () => {
-      state.food.restaurants = [];
       $("#food-results").replaceChildren();
-      $("#food-results-title").textContent = data.area;
+      $("#food-results-title").textContent = "Your location";
       $("#food-source-notice").hidden = true;
       show("food-results");
-      // OpenStreetMap can take ~20s the first time an area is searched.
-      setLoading(true, "Finding restaurants nearby…");
-
-      const result = await api("/api/food/restaurants", { area: data.area, query: data.query || undefined });
-      state.food.area = result.area;
-      state.food.restaurants = result.restaurants;
-      $("#food-form").area.value = result.area;
-      await storage.set("food_area", result.area);
-
-      $("#food-results-title").textContent = data.query ? `${data.query} in ${result.area}` : `Restaurants in ${result.area}`;
-      $("#food-source-notice").hidden = result.source !== "sample";
-      renderRestaurants();
-      haptic.notify(result.restaurants.length ? "success" : "warning");
+      setLoading(true, "Getting your location…");
+      const point = await getLiveLocation();
+      await searchFood({ ...point, label: "Your location" }, query);
     }, () => show("food-form"));
   }
 
   function renderRestaurants() {
-    renderOffers($("#food-results"), state.food.restaurants, "No restaurants found. Try another area or dish.", (restaurant) => {
+    renderOffers($("#food-results"), state.food.restaurants, "No restaurants found nearby. Try another place or dish.", (restaurant) => {
       const card = el("button", "offer");
       card.type = "button";
       const top = el("div", "top");
       top.append(
         el("span", "", `${restaurant.emoji} ${restaurant.name}`),
-        el("span", "price", restaurant.rating ? `⭐ ${restaurant.rating}` : `📍 ${restaurant.distanceKm} km`),
+        el("span", "price", restaurant.rating ? `⭐ ${restaurant.rating}` : `📍 ${formatDistance(restaurant.distanceKm)}`),
       );
       card.append(top, el("div", "meta", `${restaurant.cuisine} · ${restaurant.etaMinutes} min`));
       if (restaurant.address) card.append(el("div", "meta", restaurant.address));
       if (restaurant.openingHours) card.append(el("div", "meta", `🕒 ${restaurant.openingHours}`));
       card.append(
         el("span", "tag", [
-          restaurant.deliveryFee ? `Delivery ${money(restaurant.deliveryFee)}` : "Free delivery",
-          `Min ${money(restaurant.minimumOrder)}`,
+          restaurant.deliveryFee ? `Delivery ${money(restaurant.deliveryFee, restaurant.pricing.currency)}` : "Free delivery",
+          `Min ${money(restaurant.minimumOrder, restaurant.pricing.currency)}`,
         ].join(" · ")),
       );
       return card;
@@ -658,12 +755,13 @@
       // A cart only holds items from one restaurant.
       if (state.food.restaurant?.id !== restaurant.id) state.food.cart = new Map();
       state.food.restaurant = restaurant;
+      state.food.pricing = restaurant.pricing;
       state.food.menu = menu;
 
       $("#food-menu-title").textContent = `${restaurant.emoji} ${restaurant.name}`;
       $("#food-menu-meta").textContent = [
         restaurant.cuisine,
-        restaurant.rating ? `⭐ ${restaurant.rating}` : `${restaurant.distanceKm} km away`,
+        restaurant.rating ? `⭐ ${restaurant.rating}` : `${formatDistance(restaurant.distanceKm)} away`,
         `${restaurant.etaMinutes} min`,
         `Min order ${money(restaurant.minimumOrder)}`,
       ].join(" · ");
@@ -752,6 +850,7 @@
   async function openCheckout() {
     const { restaurant, menu, cart } = state.food;
     const totals = cartTotals();
+    const { pricing } = totals;
     const summary = $("#food-cart-summary");
     summary.replaceChildren(el("div", "", `${restaurant.emoji} ${restaurant.name}`));
     for (const [itemId, quantity] of cart) {
@@ -759,12 +858,12 @@
       if (!item) continue;
       summary.append(lineRow(`${quantity} × ${item.name}`, money(item.price * quantity)));
     }
+    summary.append(lineRow("Delivery fee", totals.deliveryFee ? money(totals.deliveryFee) : "Free", "hint"));
+    if (pricing.serviceFee) summary.append(lineRow("Service fee", money(pricing.serviceFee), "hint"));
+    if (pricing.taxRate) summary.append(lineRow(`${pricing.taxLabel} (${Math.round(pricing.taxRate * 100)}%)`, money(totals.tax), "hint"));
     summary.append(
-      lineRow("Delivery fee", totals.deliveryFee ? money(totals.deliveryFee) : "Free", "hint"),
-      lineRow("Service fee", money(SERVICE_FEE), "hint"),
-      lineRow("VAT (5%)", money(totals.vat), "hint"),
       lineRow("Total", money(totals.total), "price"),
-      el("div", "hint", `Delivering to ${state.food.area}`),
+      el("div", "hint", `Delivering near ${state.food.location.label}`),
     );
 
     const form = $("#delivery-form");
@@ -788,9 +887,9 @@
     const delivery = readForm($("#delivery-form"));
     if (!delivery) return;
 
-    const { restaurant, cart, area } = state.food;
+    const { restaurant, cart, location } = state.food;
     const confirmed = await showConfirm(
-      `Place a test order from ${restaurant.name} for ${money(cartTotals().total)} to ${delivery.address}, ${area}?`,
+      `Place a test order from ${restaurant.name} for ${money(cartTotals().total)} to ${delivery.address}, ${location.label}?`,
     );
     if (!confirmed) return;
 
@@ -798,7 +897,6 @@
       setMainProgress(true);
       const order = await api("/api/food/order", {
         restaurantId: restaurant.id,
-        area,
         lines: [...cart].map(([itemId, quantity]) => ({ itemId, quantity })),
         delivery,
       });
@@ -808,8 +906,8 @@
       state.food.cart = new Map();
       $("#food-order-summary").replaceChildren(
         el("div", "", `${restaurant.emoji} ${order.restaurantName}`),
-        ...order.lines.map((line) => lineRow(`${line.quantity} × ${line.name}`, money(line.total))),
-        lineRow("Total (cash on delivery)", money(order.total), "price"),
+        ...order.lines.map((line) => lineRow(`${line.quantity} × ${line.name}`, money(line.total, order.currency))),
+        lineRow("Total (cash on delivery)", money(order.total, order.currency), "price"),
         el("div", "hint", `Order ID: ${order.orderId}`),
       );
       renderOrderStatus(order.status);
@@ -861,9 +959,12 @@
     state.food.poll = null;
   }
 
-  async function setupFood() {
+  function setupFood() {
     const form = $("#food-form");
-    form.area.value = (await storage.get("food_area")) ?? "";
+    $("#use-location").addEventListener("click", () => {
+      haptic.impact("light");
+      searchAtLiveLocation();
+    });
 
     $("#food-cuisines").replaceChildren(el("span", "label", "Popular"), ...CUISINES.map((cuisine) => {
       const chip = el("button", "", cuisine);
@@ -871,16 +972,6 @@
       chip.addEventListener("click", () => { haptic.select(); form.query.value = cuisine; });
       return chip;
     }));
-
-    if (canUseApi) {
-      api("/api/food/areas").then(({ areas }) => {
-        $("#food-areas").replaceChildren(...areas.map((area) => {
-          const option = document.createElement("option");
-          option.value = area;
-          return option;
-        }));
-      }).catch(() => {});
-    }
   }
 
   // ---------- Recent searches ----------
@@ -906,7 +997,11 @@
   }
 
   async function renderRecent() {
-    const [flights, hotels] = await Promise.all([getJson("recent_flights", []), getJson("recent_hotels", [])]);
+    const [flights, hotels, foodLocations] = await Promise.all([
+      getJson("recent_flights", []),
+      getJson("recent_hotels", []),
+      getJson("recent_food_locations", []),
+    ]);
     renderChips($("#recent-flights"), flights, (item) => `${item.origin} → ${item.destination}`, (item) => {
       const form = $("#flight-form");
       form.origin.value = item.origin;
@@ -914,6 +1009,11 @@
     });
     renderChips($("#recent-hotels"), hotels, (item) => item.destination, (item) => {
       $("#hotel-form").destination.value = item.destination;
+    });
+    renderChips($("#recent-food"), foodLocations, (item) => `📍 ${item.label}`, (item) => {
+      const form = $("#food-form");
+      form.place.value = item.label;
+      if (canUseApi) run(() => searchFood(item, form.query.value.trim() || undefined), () => show("food-form"));
     });
   }
 
@@ -946,10 +1046,10 @@
       } else if (buttonId === "home") {
         tg.addToHomeScreen();
       } else if (buttonId === "clear") {
-        await storage.remove(["recent_flights", "recent_hotels", "guest", "food_area", "delivery"]);
+        await storage.remove(["recent_flights", "recent_hotels", "recent_food_locations", "guest", "delivery"]);
         $("#guest-form").reset();
         $("#delivery-form").reset();
-        $("#food-form").area.value = "";
+        $("#food-form").place.value = "";
         renderRecent();
         haptic.notify("success");
       }
@@ -1056,9 +1156,17 @@
 
     // Deep links such as t.me/<bot>/<app>?startapp=hotels and the bot's
     // "Book hotels" and "Order food" buttons (?tab=hotels, ?tab=food) open the matching tab.
-    const startTab = tg?.initDataUnsafe?.start_param || new URLSearchParams(location.search).get("tab");
+    const params = new URLSearchParams(location.search);
+    const startTab = tg?.initDataUnsafe?.start_param || params.get("tab");
     if (startTab === "hotels" || startTab === "food") switchTab(startTab);
     else show("flights-form");
+
+    // A location shared in the chat opens the Food tab with ?lat=..&lon=..
+    const lat = Number(params.get("lat"));
+    const lon = Number(params.get("lon"));
+    if (startTab === "food" && canUseApi && params.has("lat") && Number.isFinite(lat) && Number.isFinite(lon)) {
+      run(() => searchFood({ lat, lon, label: "Shared location" }), () => show("food-form"));
+    }
   }
 
   setup();
